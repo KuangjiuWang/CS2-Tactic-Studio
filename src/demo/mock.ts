@@ -1,0 +1,8 @@
+import type { LoadedProject, Preferences, ReplayFrame, Match } from '../types';
+export const defaultPreferences:Preferences={cs2Path:'',hlaePath:'',ffmpegPath:'',ffprobePath:'',demoPath:'',outputDirectory:'',resolution:720,fps:60,jobTimeoutMinutes:60};
+export function mockProject():LoadedProject{
+ const players=['entry','support','awper','lurker','anchor','alpha','bravo','charlie','delta','echo'].map((name,i)=>({id:`mock-${i}`,steamId:`mock-${i}`,name,teamId:i<5?'2':'3'}));
+ const frames:ReplayFrame[]=Array.from({length:961},(_,i)=>({tick:i*8,players:players.map((p,j)=>({id:p.id,x:-1200+j*245+Math.sin(i/110+j)*300,y:1000+j*150+Math.cos(i/95+j)*450,z:0,yaw:i*.8+j*25,health:j===8&&i>400?0:100,armor:100,alive:!(j===8&&i>400),side:j<5?2:3,weapon:j===2?'AWP':'AK-47',hasBomb:j===1}))}));
+ const match:Match={version:1,map:'de_dust2',tickRate:64,startTick:0,endTick:7680,sampleInterval:8,players,teams:[{id:'2',name:'Team A',playerIds:players.slice(0,5).map(p=>p.id)},{id:'3',name:'Team B',playerIds:players.slice(5).map(p=>p.id)}],rounds:[{number:1,startTick:0,freezeEndTick:640,endTick:7680,score:[0,0]}],events:[{tick:3200,type:'player_death'},{tick:5000,type:'bomb_planted'}],utility:[{id:'smoke',kind:'smoke',x:-500,y:1800,z:0,startTick:0,endTick:7000},{id:'fire',kind:'molotov',x:400,y:2400,z:0,startTick:0,endTick:5000}],framesFile:'frames.json',warnings:['MOCK: synthetic positions for UI development; no real POV.']};
+ return {match,frames,project:{version:1,name:'Practice workspace',directory:'',demoPath:'',matchDataPath:'match.json',selectedTeam:'2',pov:[],tactics:[],preferences:defaultPreferences,mock:true}};
+}
