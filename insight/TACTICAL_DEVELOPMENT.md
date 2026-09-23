@@ -21,8 +21,10 @@ per-batch cache and receive 360p/15fps muted proxies. Metadata survives
 backend restart. Dead players only have genuine in-eye coverage through death
 plus the configured tail; the UI exposes these coverage boundaries.
 
-Tactic and step records persist in the existing SQLite database. The product
-still lacks `.cstactic` exchange, drawing/editing UI, sharing, full user QA on
-actual recorded five-POV demos, and a built installer on this workstation.
+Tactic and step records persist in the existing SQLite database. Nested
+folders, tactic moves, editable steps and structured map-anchored drawing are
+available. The product still lacks `.cstactic` exchange, online sharing, full
+user QA on actual recorded five-POV demos, and a built installer on this
+workstation.
 The latter is blocked by the absent MSVC `link.exe`; CS2, OBS and FFmpeg were
 also not found in the expected local tool paths during this development run.
