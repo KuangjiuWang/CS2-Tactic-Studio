@@ -11,6 +11,7 @@ import type { Project, Match, MapOverview, PovVideo } from '../types';
 protocol.registerSchemesAsPrivileged([{scheme:'tactic-media',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true,bypassCSP:false}}]);
 let win:BrowserWindow;const roots=new Set<string>();const manager=new RenderManager();let parsing=false;
 const root=app.isPackaged?process.resourcesPath:path.resolve(__dirname,'../..');
+const detected=()=>detectPreferences(root,app.isPackaged?path.join(app.getPath('documents'),'Tactic Lab'):path.join(root,'projects'));
 const progress=(message:string)=>win?.webContents.send('progress',message);
 const authorize=(project:Project)=>{roots.add(path.resolve(project.directory).toLowerCase());for(const v of project.pov){roots.add(path.dirname(path.resolve(v.path)).toLowerCase());roots.add(path.dirname(path.resolve(v.proxyPath)).toLowerCase());}};
 function assertProject(project:Project){if(!roots.has(path.resolve(project.directory).toLowerCase()))throw new Error('Open or save a project folder first.');}
@@ -20,11 +21,11 @@ app.whenReady().then(async()=>{
  win=new BrowserWindow({width:1500,height:970,minWidth:1050,minHeight:700,backgroundColor:'#0c1015',title:'Tactic Lab',webPreferences:{preload:path.join(__dirname,'../preload/index.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true}});
  win.setMenuBarVisibility(false);win.webContents.setWindowOpenHandler(()=>({action:'deny'}));win.webContents.on('will-navigate',(e,url)=>{if(url!==win.webContents.getURL())e.preventDefault();});
  const handle=(channel:string,fn:(...args:any[])=>unknown)=>ipcMain.handle(channel,(e,...args)=>{if(e.sender!==win.webContents||e.senderFrame!==win.webContents.mainFrame)throw new Error('Invalid IPC sender.');return fn(...args);});
- handle('detect',()=>detectPreferences(root));handle('pick-file',pick);
+ handle('detect',detected);handle('pick-file',pick);
  handle('pick-directory',async()=>{const r=await dialog.showOpenDialog(win,{properties:['openDirectory','createDirectory']});return r.canceled?null:r.filePaths[0];});
  handle('import-demo',async(given?:string)=>{
   if(parsing||manager.active)throw new Error('Wait for the current parsing/render operation.');const file=given??await pick('demo');if(!file)return null;
-  parsing=true;try{const preferences=await detectPreferences(root);const base=preferences.outputDirectory||path.join(app.getPath('documents'),'Tactic Lab');const directory=path.join(base,`${path.basename(file,'.dem')}-${Date.now()}`);await fs.mkdir(directory,{recursive:true});
+  parsing=true;try{const preferences=await detected();const base=preferences.outputDirectory;const directory=path.join(base,`${path.basename(file,'.dem')}-${Date.now()}`);await fs.mkdir(directory,{recursive:true});
    const match=await new Promise<Match>((resolve,reject)=>{const child=fork(path.join(__dirname,'../demo/worker.cjs'),[file,directory],{env:{...process.env,ELECTRON_RUN_AS_NODE:'1'},stdio:['ignore','pipe','pipe','ipc']});let resolved=false;let error='';child.stderr?.on('data',d=>error+=d);child.on('message',(m:any)=>{if(m.type==='progress')progress(m.message);if(m.type==='done'){resolved=true;resolve(m.match);}if(m.type==='error')reject(new Error(m.message));});child.on('error',reject);child.on('exit',code=>{if(!resolved)reject(new Error(error||`Parser exited ${code}`));});});
    const project:Project={version:1,name:path.basename(file,'.dem'),directory,demoPath:file,matchDataPath:'match.json',selectedTeam:match.teams[0]?.id??'',pov:[],tactics:[],preferences:{...preferences,demoPath:file},mock:false};
    await saveProjectData(project);authorize(project);return await loadProject(path.join(directory,'project.json'));

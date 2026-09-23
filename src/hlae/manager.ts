@@ -26,7 +26,7 @@ export class RenderManager {
     if(signal.aborted){job.status='cancelled';continue;}
     const began=Date.now();const dir=path.join(project.directory,'generated',job.id);await fs.mkdir(dir,{recursive:true});
     const update=(message:string,status=job.status)=>{job.status=status;job.elapsed=(Date.now()-began)/1000;job.message=message;job.log.push(`${new Date().toISOString()} ${message}`);emit({jobs:structuredClone(this.jobs)});};
-    let cfgPath='';let cs2Pid:number|undefined;let processChild:ReturnType<typeof spawn>|undefined;
+    let cfgPath='';let cs2Pid:number|undefined;let processChild:ReturnType<typeof spawn>|undefined;let log='';
     try{
       update(`Job started · ${job.name}`,'starting');
       const capture=generateCapture({demoPath:project.demoPath,directory:dir,steamId:job.playerId,startTick,endTick,tickRate:match.tickRate,preferences:p});
@@ -37,14 +37,15 @@ export class RenderManager {
       await fs.writeFile(path.join(dir,'launch.json'),JSON.stringify({exe:p.hlaePath,args},null,2));update(`Command: ${p.hlaePath} ${args.join(' ')}`);
       const consoleLog=path.join(game,'console.log');let offset=0;try{offset=(await fs.stat(consoleLog)).size;}catch{}
       processChild=spawn(p.hlaePath,args,{cwd:path.dirname(p.cs2Path),windowsHide:true});let launchError:Error|undefined;processChild.on('error',e=>{launchError=e;});
-      let log='',start:number|undefined,end:number|undefined,recorded=false;
+      let start:number|undefined,end:number|undefined,takeFolder='',recorded=false;
       const deadline=Date.now()+p.jobTimeoutMinutes*60000;
       while(Date.now()<deadline){
         if(signal.aborted)throw new Error('Cancelled');if(launchError)throw launchError;
         if(!cs2Pid){const list=await run('tasklist',['/FI','IMAGENAME eq cs2.exe','/FO','CSV','/NH']);const pid=list.match(/"cs2\.exe","(\d+)"/i);if(pid){cs2Pid=Number(pid[1]);update('CS2 launched');}}
         try{const f=await fs.open(consoleLog,'r');try{const st=await f.stat();if(st.size<offset)offset=0;const b=Buffer.alloc(st.size-offset);await f.read(b,0,b.length,offset);offset=st.size;log+=b.toString('utf8');}finally{await f.close();}}catch{}
-        const s=log.match(/TL_RECORD_START (\{[^\r\n]+\})/);if(s&&!recorded){start=JSON.parse(s[1]).tick;recorded=true;update(`Recording started at tick ${start}`,'recording');}
+        const s=log.match(/TL_RECORD_START (\{[^\r\n]+\})/);if(s&&!recorded){const record=JSON.parse(s[1]);start=record.tick;takeFolder=record.takeFolder;recorded=true;update(`Recording started at tick ${start}`,'recording');}
         const e=log.match(/TL_RECORD_END (\{[^\r\n]+\})/);if(e){end=JSON.parse(e[1]).tick;update(`Recording stopped at tick ${end}`);break;}
+        if(/Could not find address for pattern/.test(log)&&!recorded){this.abort?.abort();throw new Error('HLAE / CS2 version incompatibility: Source2 hook signature not found. Install a compatible HLAE build. See generated console.log. No POV was produced.');}
         if(/TL_ERROR|AFXERROR|Error loading.*capture\.js/.test(log))throw new Error(log.slice(-5000));
         await new Promise(r=>setTimeout(r,500));job.elapsed=(Date.now()-began)/1000;emit({jobs:structuredClone(this.jobs)});
       }
@@ -54,15 +55,16 @@ export class RenderManager {
       // Capture is stopped and flushed before shutting down this queue's game process.
       if(cs2Pid){await run('taskkill',['/PID',String(cs2Pid),'/T','/F']).catch(()=>{});cs2Pid=undefined;}
       update('FFmpeg: muxing game audio and generating 360p proxy','encoding');
-      const video=await encodeCapture(path.join(dir,'capture'),project.directory,job.playerId,start,end,match.tickRate,p,signal);
+      const captureDir=takeFolder&&path.isAbsolute(takeFolder)?takeFolder:path.join(dir,'capture');
+      const video=await encodeCapture(captureDir,project.directory,job.playerId,start,end,match.tickRate,p,signal);
       project.pov=project.pov.filter(v=>v.playerId!==video.playerId).concat(video);
       await fs.writeFile(path.join(project.directory,'project.json'),JSON.stringify(project,null,2));
       update('Completed — video and game audio verified','completed');emit({jobs:structuredClone(this.jobs),video});
-    }catch(e){update(String(e),signal.aborted?'cancelled':'failed');}
+    }catch(e){update(String(e),String(e).includes('version incompatibility')?'failed':signal.aborted?'cancelled':'failed');}
     finally{
       if(cs2Pid)await run('taskkill',['/PID',String(cs2Pid),'/T','/F']).catch(()=>{});
       processChild?.kill();if(cfgPath)await fs.unlink(cfgPath).catch(()=>{});
-      await fs.writeFile(path.join(dir,'render.log'),job.log.join('\n'));
+      await fs.writeFile(path.join(dir,'console.log'),log);await fs.writeFile(path.join(dir,'render.log'),job.log.join('\n'));
     }
   }}finally{this.abort=undefined;emit({jobs:structuredClone(this.jobs)});}
  }
