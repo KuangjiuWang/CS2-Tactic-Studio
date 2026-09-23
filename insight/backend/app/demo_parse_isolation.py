@@ -1,0 +1,193 @@
+"""Run demoparser work in a child process so native crashes do not kill FastAPI."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any, Optional
+
+from .parse_worker_ipc import dump_message, load_message
+
+
+class IsolatedParseError(RuntimeError):
+    pass
+
+
+def _timeout_seconds(action: str) -> float:
+    if action in {"players", "summary", "inspect"}:
+        env_name = "CS2_INSIGHT_DEMO_INSPECT_TIMEOUT_SEC"
+        default = "30"
+    else:
+        env_name = "CS2_INSIGHT_PARSE_WORKER_TIMEOUT_SEC"
+        default = "240"
+    raw = (os.environ.get(env_name) or default).strip()
+    try:
+        return max(10.0, float(raw))
+    except ValueError:
+        return float(default)
+
+
+def run_parse_worker(action: str, **payload: Any) -> Any:
+    req = {"action": action, **payload}
+    timeout = _timeout_seconds(action)
+    tmp_dir = Path(tempfile.gettempdir()) / "cs2_insight_parse_workers"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("wb", suffix=".pkl", dir=tmp_dir, delete=False) as rf:
+        req_path = Path(rf.name)
+    dump_message(req_path, req)
+    out_path = tmp_dir / f"{req_path.stem}.out.pkl"
+    err_path = tmp_dir / f"{req_path.stem}.err.txt"
+    env = os.environ.copy()
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    worker_path = Path(__file__).with_name("parse_worker.py")
+    cmd = [sys.executable, str(worker_path), str(req_path), str(out_path)]
+    try:
+        with err_path.open("w", encoding="utf-8", errors="replace") as err_file:
+            cp = subprocess.run(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=err_file,
+                text=False,
+                timeout=timeout,
+                env=env,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+    except subprocess.TimeoutExpired as e:
+        for stale_path in (err_path, out_path):
+            try:
+                stale_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise IsolatedParseError(f"解析超时（>{timeout:.0f}s），worker 已被终止") from e
+    finally:
+        try:
+            req_path.unlink()
+        except OSError:
+            pass
+
+    stderr_tail = ""
+    try:
+        stderr_tail = err_path.read_text(encoding="utf-8", errors="replace")[-2000:].strip()
+    except OSError:
+        pass
+    finally:
+        try:
+            err_path.unlink()
+        except OSError:
+            pass
+
+    if cp.returncode != 0:
+        try:
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        detail = f"解析 worker 退出码 {cp.returncode}"
+        if stderr_tail:
+            detail += f": {stderr_tail}"
+        raise IsolatedParseError(detail)
+    if not out_path.is_file():
+        raise IsolatedParseError("解析 worker 未返回结果")
+    try:
+        data = load_message(out_path)
+    finally:
+        try:
+            out_path.unlink()
+        except OSError:
+            pass
+    if not data.get("ok"):
+        raise IsolatedParseError(str(data.get("error") or "解析失败"))
+    return data.get("result")
+
+
+def analyze_demo_isolated(
+    dem_path: str,
+    target_player: str,
+    freeze_to_death_rounds: Optional[list[int]] = None,
+) -> dict:
+    result = run_parse_worker(
+        "analyze",
+        dem_path=dem_path,
+        target_player=target_player,
+        freeze_to_death_rounds=freeze_to_death_rounds,
+    )
+    if not isinstance(result, dict):
+        raise IsolatedParseError("解析 worker 返回了无效结果")
+    return result
+
+
+def get_player_list_isolated(dem_path: str) -> list[dict]:
+    result = run_parse_worker("players", dem_path=dem_path)
+    if not isinstance(result, list):
+        raise IsolatedParseError("玩家列表 worker 返回了无效结果")
+    return result
+
+
+def get_demo_match_summary_isolated(dem_path: str) -> dict:
+    result = run_parse_worker("summary", dem_path=dem_path)
+    if not isinstance(result, dict):
+        raise IsolatedParseError("Demo 摘要 worker 返回了无效结果")
+    return result
+
+
+def inspect_demo_isolated(dem_path: str) -> dict:
+    result = run_parse_worker("inspect", dem_path=dem_path)
+    if not isinstance(result, dict):
+        raise IsolatedParseError("Demo 检查 worker 返回了无效结果")
+    players = result.get("players")
+    match_meta = result.get("match_meta")
+    if not isinstance(players, list) or not isinstance(match_meta, dict):
+        raise IsolatedParseError("Demo 检查 worker 缺少玩家名单或比赛摘要")
+    return result
+
+
+def extract_radar_timeline_isolated(**kwargs: Any) -> Any:
+    """parse_ticks 雷达时间线（子进程隔离，避免 demoparser 原生崩溃拖垮服务）。"""
+    return run_parse_worker("radar_timeline", **kwargs)
+
+
+def extract_replay_effects_isolated(**kwargs: Any) -> Any:
+    """烟雾/燃烧效果轨（子进程隔离）。"""
+    return run_parse_worker("replay_effects", **kwargs)
+
+
+def materialize_match_replay_parquet_isolated(
+    demo_path: str,
+    workspace: dict[str, Any],
+    *,
+    fps: float = 32.0,
+) -> dict[str, Any]:
+    """Build the whole-match Rust Parquet cache without risking the API process."""
+    result = run_parse_worker(
+        "materialize_replay",
+        dem_path=demo_path,
+        workspace=workspace,
+        fps=float(fps),
+    )
+    if not isinstance(result, dict):
+        raise IsolatedParseError("回放 Parquet worker 返回了无效结果")
+    return result
+
+
+def analyze_multi_isolated(
+    dem_path: str,
+    target_players: list[str],
+    freeze_to_death_rounds: Optional[list[int]] = None,
+) -> dict:
+    """
+    Run multi-player shared parsing in an isolated subprocess.
+    Returns {player_name: ParseResult.to_dict()} for all players.
+    ~10x fewer demo file scans vs calling analyze_demo_isolated per player.
+    """
+    result = run_parse_worker(
+        "analyze_batch",
+        dem_path=dem_path,
+        target_players=target_players,
+        freeze_to_death_rounds=freeze_to_death_rounds,
+    )
+    if not isinstance(result, dict):
+        raise IsolatedParseError("多玩家解析 worker 返回了无效结果")
+    return result

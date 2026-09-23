@@ -1,0 +1,132 @@
+# Python
+/.github/
+/tmp_*.txt
+python/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+frontend/dist/
+.vite/
+
+# IDE
+.vscode/
+.idea/
+
+# Retired CI workflow: prevent untracked local copies from being re-added.
+/.github/workflows/ci.yml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Portable packaging cache (embeddable Python zips, get-pip.py)
+.packaging-cache/
+
+# Temp
+/tmp/
+*.tmp
+*.log
+.empty-git-hooks/
+
+# Local demo files (do not upload)
+cs2_demo/
+cs2_demo_lib
+debugtest/
+
+# Local / agent plans and specs (not versioned)
+docs/superpowers/
+
+# Local GitHub PAT for the legacy update-info endpoint (never commit)
+.cs2-insight-github-token
+
+# Local portable zip from Compress-Archive (repo root)
+CS2InsightAgent-*-windows-amd64.zip
+
+# Stale metadata from pre-Tauri release builds
+backend/app/release_version.txt
+
+# Project doc not tracked
+开发白皮书.md
+
+# Local tooling scripts (keep local only)
+debug_demoparser.py
+debug_demo_max_tick.py
+debug_demoparser2.py
+debug_parse_demo.py
+
+# Local weather-effects research inputs and third-party development tools.
+# These are workstation-only and must not be published to GitHub.
+/MAP/
+/tools/vendor/
+# Local reverse-engineering probe; the tracked copy is hidden locally with
+# skip-worktree so workstation-only NetSetConVar diagnostics are not committed.
+tools/demo-cosmetic-rewriter/src/bin/demo-netmessage-audit.rs
+.cursor/
+.claude/
+# Root scripts/ is for ad-hoc local scripts; tracked exceptions below.
+/scripts/*
+!/scripts/github-bootstrap.ps1
+!/scripts/litecut_visual_regression.py
+build_portable.bat
+rebuild_frontend.ps1
+dev.sh
+
+# --- CS2 Insight local data (SQLite / player cfg backup / secrets — do not push) ---
+backend/config.json
+**/cs2-insight.config.json
+cs2-insight.db
+cs2-insight.db-wal
+cs2-insight.db-shm
+.cs2_config_backup/
+
+# Everything under data/ except the versioned example template
+data/**
+!data/cs2-insight.config.example.json
+!data/basic.ini
+
+# Alternate local data root used by development/testing
+/data1/
+frontend/public/__litecut_visual_tmp/
+/artifacts/
+
+# Editable chroma payload work trees. The versioned runtime catalog is
+# pov/chroma_skybox_children/payloads.zip; use tools/chroma_payload_catalog.py
+# to extract/rebuild these local source trees when a map changes.
+/pov/chroma_skybox_children/payloads/
+/pov/chroma_main_maps/payloads/
+
+# Legacy Electron distribution (local artifacts may still exist after migration)
+frontend/dist_electron*/
+frontend/build/
+
+# Tauri build output and staged runtime resources
+frontend/src-tauri/target/
+frontend/src-tauri/gen/schemas/
+frontend/src-tauri/bundle-resources/*
+!frontend/src-tauri/bundle-resources/.gitkeep
+
+# Local generated preview artifacts (match report preview, etc.)
+frontend/preview/
+
+# Local generated skin-core review artifacts
+/outputs/019ff569-5dc4-70f2-be8e-2805bd349591/
+/docs/skin-core-paid-features-and-validation-design.md
+/docs/skin-core-remote-validation-design.md
+
+# Local UI design backups created before visual refactors
+backups/
+
+# Agent / local worktrees
+.worktrees/
+.superpowers/
+

@@ -1,0 +1,511 @@
+"""合辑导出：解析 FFmpeg 硬件/软件 H.264 编码器及命令行参数。"""
+
+from __future__ import annotations
+
+import logging
+import subprocess
+from pathlib import Path
+from typing import Any, Literal, Sequence
+
+from .ffmpeg_process import command_for_log, decoded_completed_process, process_error_tail
+from .montage_exceptions import HardwareEncoderFailure, MontageComposerError
+
+from .ffmpeg_process import command_for_log, decoded_completed_process, process_error_tail
+
+logger = logging.getLogger(__name__)
+
+MontageEncoderTier = Literal["quality", "fast"]
+
+
+def _composer_err(msg: str) -> None:
+    raise MontageComposerError(msg)
+
+_VALID_USER_MODES = frozenset({"auto", "libx264", "h264_nvenc", "h264_qsv", "h264_amf"})
+_HW_ORDER = ("h264_nvenc", "h264_qsv", "h264_amf")
+HARDWARE_H264_CODECS = frozenset(_HW_ORDER)
+
+_encoder_check_cache: dict[str, frozenset[str]] = {}
+# FFmpeg 常把 NVENC/QSV/AMF 编进列表，但无对应硬件时打开编码器会失败；auto 需实测。
+_hw_probe_cache: dict[tuple[str, str], bool] = {}
+_ffmpeg_version_cache: dict[str, str] = {}
+
+
+def _minimal_h264_probe_encode_args(codec: str) -> list[str]:
+    """短时 lavfi 探测参数——只求编码器可靠打开并完成基础编码。"""
+    if codec == "libx264":
+        return ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "35", "-pix_fmt", "yuv420p"]
+    if codec == "h264_nvenc":
+        # p4 = 新 SDK 的"medium"，是 p1-p7 里兼容性最好的中档，FFmpeg 4.4+ 均支持。
+        # 不传 preset 反而可能因编码器使用 lossless 默认值而初始化失败。
+        return ["-c:v", "h264_nvenc", "-preset", "p4", "-pix_fmt", "yuv420p"]
+    if codec == "h264_qsv":
+        return ["-c:v", "h264_qsv", "-preset", "medium", "-global_quality", "28", "-pix_fmt", "yuv420p"]
+    if codec == "h264_amf":
+        return [
+            "-c:v",
+            "h264_amf",
+            "-usage",
+            "transcoding",
+            "-quality",
+            "speed",
+            "-rc",
+            "cqp",
+            "-qp_i",
+            "28",
+            "-qp_p",
+            "30",
+            "-vbaq",
+            "false",
+            "-pix_fmt",
+            "yuv420p",
+        ]
+    return []
+
+
+def _hw_encoder_runtime_ok(ffmpeg_bin: Path, codec: str) -> bool:
+    if codec not in _HW_ORDER:
+        return True
+    key = (str(ffmpeg_bin.resolve()), codec)
+    if key in _hw_probe_cache:
+        return _hw_probe_cache[key]
+    extra = _minimal_h264_probe_encode_args(codec)
+    if not extra:
+        _hw_probe_cache[key] = False
+        return False
+    # AMF's one-frame initialization can pass while a real 1080p/60 encode
+    # fails.  Exercise enough frames to create the production encoder queues.
+    source = (
+        "testsrc2=s=1920x1080:r=60:d=1,format=yuv420p"
+        if codec == "h264_amf"
+        else "testsrc2=s=320x240:r=1:d=0.05,format=yuv420p"
+    )
+    frame_count = "60" if codec == "h264_amf" else "1"
+    cmd = [
+        str(ffmpeg_bin),
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        source,
+        "-frames:v",
+        frame_count,
+        "-an",
+        *extra,
+        "-f",
+        "null",
+        "-",
+    ]
+    try:
+        raw_proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=False,
+            timeout=45,
+            check=False,
+        )
+        proc = decoded_completed_process(raw_proc, args=cmd)
+        ok = proc.returncode == 0
+        if not ok:
+            logger.warning(
+                "硬件编码器探测失败 codec=%s returncode=%d command=%s stderr=%s",
+                codec,
+                proc.returncode,
+                command_for_log(cmd),
+                process_error_tail(proc, 1200),
+            )
+    except subprocess.TimeoutExpired:
+        logger.warning("硬件编码器探测超时 codec=%s", codec)
+        ok = False
+    except OSError as e:
+        logger.warning("硬件编码器探测异常 codec=%s: %s", codec, e)
+        ok = False
+    _hw_probe_cache[key] = ok
+    return ok
+
+
+def _ffmpeg_encoder_names(ffmpeg_bin: Path) -> frozenset[str]:
+    key = str(ffmpeg_bin.resolve())
+    if key in _encoder_check_cache:
+        return _encoder_check_cache[key]
+    cmd = [str(ffmpeg_bin), "-hide_banner", "-encoders"]
+    raw_proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=False,
+        timeout=90,
+        check=False,
+    )
+    proc = decoded_completed_process(raw_proc, args=cmd)
+    text = (proc.stdout or "") + (proc.stderr or "")
+    found: set[str] = set()
+    for line in text.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) >= 2 and parts[0].startswith("V"):
+            found.add(parts[1])
+    _encoder_check_cache[key] = frozenset(found)
+    return _encoder_check_cache[key]
+
+
+def _ffmpeg_version_line(ffmpeg_bin: Path) -> str:
+    key = str(ffmpeg_bin.resolve())
+    if key in _ffmpeg_version_cache:
+        return _ffmpeg_version_cache[key]
+    cmd = [str(ffmpeg_bin), "-version"]
+    try:
+        raw_proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=False,
+            timeout=15,
+            check=False,
+        )
+        proc = decoded_completed_process(raw_proc, args=cmd)
+        line = next((item.strip() for item in proc.stdout.splitlines() if item.strip()), "")
+    except (OSError, subprocess.SubprocessError):
+        line = ""
+    _ffmpeg_version_cache[key] = line or "unknown"
+    return _ffmpeg_version_cache[key]
+
+
+def available_h264_encoders(ffmpeg_bin: Path) -> frozenset[str]:
+    """Return H.264 encoders compiled into the selected FFmpeg binary."""
+
+    return frozenset(
+        name
+        for name in _ffmpeg_encoder_names(ffmpeg_bin)
+        if name in {*HARDWARE_H264_CODECS, "libx264"}
+    )
+
+
+def ffmpeg_encoder_identity(ffmpeg_bin: Path) -> str:
+    """Stable process-local identity used by target-specific probe caches."""
+
+    return f"{ffmpeg_bin.resolve()}|{_ffmpeg_version_line(ffmpeg_bin)}"
+
+
+def apply_encoder_device_args(
+    encode_args: Sequence[str],
+    device_args: Sequence[str] | None,
+) -> list[str]:
+    """Attach encoder-private device options after ``-c:v <codec>``."""
+
+    result = [str(item) for item in encode_args]
+    extra = [str(item) for item in (device_args or ())]
+    if not extra:
+        return result
+    try:
+        codec_flag = result.index("-c:v")
+    except ValueError:
+        return [*result, *extra]
+    insert_at = min(len(result), codec_flag + 2)
+    return [*result[:insert_at], *extra, *result[insert_at:]]
+
+
+def hardware_codec_from_command(command: Sequence[str]) -> str | None:
+    """Return the hardware H.264 encoder explicitly present in a command."""
+
+    for item in command:
+        value = str(item).strip().lower()
+        if value in HARDWARE_H264_CODECS:
+            return value
+    return None
+
+
+def raise_hardware_encoder_failure(
+    command: Sequence[str],
+    result: Any,
+    *,
+    stage: str,
+    artifact_path: str | Path | None,
+    public_code: str,
+    public_params: dict[str, Any] | None = None,
+) -> None:
+    """Raise only when a failed FFmpeg command explicitly used hardware H.264."""
+
+    codec = hardware_codec_from_command(command)
+    if codec is None:
+        return
+    raise HardwareEncoderFailure(
+        codec=codec,
+        stage=stage,
+        returncode=int(getattr(result, "returncode", -1)),
+        stderr=process_error_tail(result),
+        artifact_path=artifact_path,
+        public_code=public_code,
+        public_params=public_params,
+        command=command,
+    )
+
+
+def _selected_codec(ffmpeg_bin: Path, requested: str, selected: str) -> str:
+    logger.info(
+        "FFmpeg H.264 encoder selected requested=%s selected=%s ffmpeg=%s version=%s",
+        requested,
+        selected,
+        ffmpeg_bin,
+        _ffmpeg_version_line(ffmpeg_bin),
+    )
+    return selected
+
+
+def resolve_h264_codec_name(ffmpeg_bin: Path, user_mode: str) -> str:
+    """
+    user_mode: auto（NVENC→QSV→AMF→libx264；硬件项除 -encoders 外再做运行时实测）或明确编码器名。
+    """
+    raw = (user_mode or "auto").strip().lower()
+    if raw not in _VALID_USER_MODES:
+        raw = "auto"
+    avail = _ffmpeg_encoder_names(ffmpeg_bin)
+
+    if raw == "auto":
+        for name in _HW_ORDER:
+            if name in avail and _hw_encoder_runtime_ok(ffmpeg_bin, name):
+                return _selected_codec(ffmpeg_bin, raw, name)
+        if "libx264" in avail:
+            return _selected_codec(ffmpeg_bin, raw, "libx264")
+        _composer_err(
+            "当前 FFmpeg 未包含可用的 H.264 编码器（需要 libx264 或硬件编码器）。",
+        )
+
+    if raw not in avail:
+        if raw in _HW_ORDER:
+            if "libx264" in avail:
+                logger.warning(
+                    "requested hardware encoder is not compiled in; falling back requested=%s fallback=libx264",
+                    raw,
+                )
+                return _selected_codec(ffmpeg_bin, raw, "libx264")
+            _composer_err(
+                f"当前 FFmpeg 未编译 {raw}，请在配置中将「合辑视频编码」改为「自动」或 libx264，"
+                "或安装带对应编码器的 FFmpeg 构建。",
+            )
+        if raw == "libx264" and "libx264" not in avail:
+            _composer_err("当前 FFmpeg 未包含 libx264。")
+        _composer_err(f"当前 FFmpeg 不包含编码器: {raw}")
+
+    if raw in _HW_ORDER and not _hw_encoder_runtime_ok(ffmpeg_bin, raw):
+        if "libx264" in avail:
+            logger.warning(
+                "requested hardware encoder failed runtime probe; falling back requested=%s fallback=libx264",
+                raw,
+            )
+            return _selected_codec(ffmpeg_bin, raw, "libx264")
+        _composer_err(f"{raw} 当前不可用，且 FFmpeg 未包含可回退的 libx264 编码器。")
+
+    return _selected_codec(ffmpeg_bin, raw, raw)
+
+
+def h264_encode_cli_args(codec: str, tier: MontageEncoderTier) -> list[str]:
+    """
+    返回 -c:v 起的参数列表（含 pix_fmt / profile 等），不含输入输出路由。
+    quality：片段归一化、转场、雷达叠层（对标原 crf 18 / medium）。
+    fast：成片兼容重编码（对标原 crf 20 / faster）。
+    """
+    if tier == "quality":
+        if codec == "libx264":
+            return [
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "18",
+                "-profile:v",
+                "main",
+                "-pix_fmt",
+                "yuv420p",
+            ]
+        if codec == "h264_nvenc":
+            return [
+                "-c:v",
+                "h264_nvenc",
+                "-preset",
+                "p4",
+                "-rc",
+                "vbr",
+                "-cq",
+                "20",
+                "-bf",
+                "2",
+                "-profile:v",
+                "high",
+                "-pix_fmt",
+                "yuv420p",
+            ]
+        if codec == "h264_qsv":
+            return [
+                "-c:v",
+                "h264_qsv",
+                "-preset",
+                "medium",
+                "-global_quality",
+                "22",
+                "-profile:v",
+                "high",
+                "-pix_fmt",
+                "yuv420p",
+            ]
+        if codec == "h264_amf":
+            return [
+                "-c:v",
+                "h264_amf",
+                "-usage",
+                "transcoding",
+                "-quality",
+                "balanced",
+                "-rc",
+                "cqp",
+                "-qp_i",
+                "20",
+                "-qp_p",
+                "22",
+                "-vbaq",
+                "false",
+                "-pix_fmt",
+                "yuv420p",
+            ]
+    else:
+        if codec == "libx264":
+            return [
+                "-c:v",
+                "libx264",
+                "-preset",
+                "faster",
+                "-crf",
+                "20",
+                "-profile:v",
+                "main",
+                "-level",
+                "4.0",
+                "-pix_fmt",
+                "yuv420p",
+            ]
+        if codec == "h264_nvenc":
+            return [
+                "-c:v",
+                "h264_nvenc",
+                "-preset",
+                "p6",
+                "-rc",
+                "vbr",
+                "-cq",
+                "22",
+                "-bf",
+                "2",
+                "-profile:v",
+                "high",
+                "-pix_fmt",
+                "yuv420p",
+            ]
+        if codec == "h264_qsv":
+            return [
+                "-c:v",
+                "h264_qsv",
+                "-preset",
+                "fast",
+                "-global_quality",
+                "24",
+                "-profile:v",
+                "high",
+                "-pix_fmt",
+                "yuv420p",
+            ]
+        if codec == "h264_amf":
+            return [
+                "-c:v",
+                "h264_amf",
+                "-usage",
+                "transcoding",
+                "-quality",
+                "speed",
+                "-rc",
+                "cqp",
+                "-qp_i",
+                "22",
+                "-qp_p",
+                "24",
+                "-vbaq",
+                "false",
+                "-pix_fmt",
+                "yuv420p",
+            ]
+
+    _composer_err(f"不支持的编码器: {codec}")
+
+
+def diagnose_encoders(ffmpeg_bin: Path) -> dict:
+    """返回各 H.264 编码器的可用状态，供设置页展示。"""
+    from .encoder_planner import (
+        build_encoder_candidates,
+        enumerate_windows_gpus,
+        map_nvenc_device_indices,
+    )
+
+    avail = _ffmpeg_encoder_names(ffmpeg_bin)
+    adapters = enumerate_windows_gpus()
+    if "h264_nvenc" in avail:
+        adapters = map_nvenc_device_indices(ffmpeg_bin, adapters)
+    auto_candidates = build_encoder_candidates(
+        "auto",
+        adapters,
+        available_encoders=avail,
+    )
+    auto_hardware_codec = next(
+        (candidate.codec for candidate in auto_candidates if candidate.is_hardware),
+        None,
+    )
+    hw_results = []
+    hardware_probe_ok: dict[str, bool] = {}
+
+    for name in _HW_ORDER:
+        in_list = name in avail
+        probe_ok = False
+        probe_err = ""
+        if in_list:
+            # 直接跑探测，捕获 warning 日志中的 stderr
+            key = (str(ffmpeg_bin.resolve()), name)
+            # 清缓存，保证每次检测都重跑
+            _hw_probe_cache.pop(key, None)
+            probe_ok = _hw_encoder_runtime_ok(ffmpeg_bin, name)
+            if not probe_ok:
+                probe_err = "短时编码测试失败（驱动不支持或 FFmpeg 未编译对应 SDK）"
+        else:
+            probe_err = "FFmpeg 未编译此编码器（essentials 构建不含硬件编码器，请换用 full 构建）"
+        hw_results.append({
+            "codec": name,
+            "in_encoder_list": in_list,
+            "probe_ok": probe_ok,
+            "error": probe_err,
+        })
+        hardware_probe_ok[name] = probe_ok
+
+    x264_ok = "libx264" in avail
+    selected = (
+        auto_hardware_codec
+        if auto_hardware_codec and hardware_probe_ok.get(auto_hardware_codec)
+        else "libx264" if x264_ok else None
+    )
+    primary_candidate = auto_candidates[0] if auto_candidates else None
+    preferred_adapter = (
+        primary_candidate.adapter
+        if primary_candidate is not None and primary_candidate.is_hardware
+        else None
+    )
+
+    return {
+        "selected": selected or "none",
+        "hw": hw_results,
+        "libx264_available": x264_ok,
+        "primary_gpu": (
+            {
+                "name": preferred_adapter.name,
+                "vendor": preferred_adapter.vendor,
+                "kind": preferred_adapter.kind,
+            }
+            if preferred_adapter is not None
+            else None
+        ),
+    }
