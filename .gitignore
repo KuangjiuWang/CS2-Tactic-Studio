@@ -1,0 +1,8 @@
+node_modules/
+dist/
+release/
+tools/
+projects/
+artifacts/
+.cache/
+*.log
