@@ -15,7 +15,7 @@ export class PlaybackController {
  private stopFrame(){if(this.main&&this.frameHandle)this.main.cancelVideoFrameCallback(this.frameHandle);this.frameHandle=0;}
  sync(force=false){const s=useStore.getState();this.stopFrame();const active=s.viewMode==='pov'?this.videos.get(s.selectedPlayer):undefined;
   for(const [id,v] of this.videos){if(!active||id!==s.selectedPlayer){v.element.pause();v.element.muted=true;}}
-  if(!active){this.main=undefined;return;}
+  if(!active){this.main=undefined;if(s.viewMode==='pov'&&s.playing)s.set({playing:false});return;}
   const {element:v,metadata:m}=active;this.main=v;v.playbackRate=s.playbackRate;v.volume=s.volume;v.muted=false;
   if(!coversTick(s.currentTick,m)){v.pause();if(s.playing)s.set({playing:false});return;}
   const wanted=tickToVideoTime(s.currentTick,m);const generation=++this.generation;
