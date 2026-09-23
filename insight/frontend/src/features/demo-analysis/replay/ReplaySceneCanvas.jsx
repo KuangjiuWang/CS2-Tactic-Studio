@@ -3,6 +3,7 @@ import { getDemoRadarMapUrl } from "../../../api/api";
 import KillfeedIconStrip from "../workspaces/timeline/killfeed/KillfeedIconStrip";
 import { resolveHudWeaponStem } from "../workspaces/timeline/killfeed/resolveHudWeaponStem";
 import ReplayAreaEffectsCanvas from "./ReplayAreaEffectsCanvas";
+import TacticalAnnotationLayer from "./TacticalAnnotationLayer";
 import ReplayBombMarker from "./ReplayBombMarker";
 import ReplayCameraControls from "./ReplayCameraControls";
 import {
@@ -290,6 +291,11 @@ export default function ReplaySceneCanvas({
   effectTracks,
   effectCapabilities,
   smokeDebugLayer = "off",
+  annotations = [],
+  annotationMode = "select",
+  annotationColor = "#fbbf24",
+  onAnnotationCommit,
+  onAnnotationDelete,
 }) {
   const playhead = useSyncExternalStore(playheadStore.subscribe, playheadStore.getSnapshot);
   const fallbackTick = selectedRound?.freeze_end_tick || selectedRound?.start_tick || 0;
@@ -844,6 +850,7 @@ export default function ReplaySceneCanvas({
           }}
         >
           <img src={getDemoRadarMapUrl(mapName, hasMapLayers ? mapLayer : "")} alt={`${mapName}${hasMapLayers ? ` ${mapLayer === "upper" ? "上层" : "下层"}` : ""} 雷达地图`} className="h-full w-full object-contain opacity-80" draggable={false} />
+          <TacticalAnnotationLayer annotations={annotations} mode={annotationMode} color={annotationColor} onCommit={onAnnotationCommit} onDelete={onAnnotationDelete} />
           <ReplayAreaEffectsCanvas
             tracks={effectTracks}
             currentTick={currentTick}

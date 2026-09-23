@@ -594,6 +594,11 @@ export default function Demo2DReplayPreview({
   externalPlaying = null,
   onPlayhead = null,
   onPlaybackChange = null,
+  annotations = [],
+  annotationMode = "select",
+  annotationColor = "#fbbf24",
+  onAnnotationCommit = null,
+  onAnnotationDelete = null,
 }) {
   const t = useT();
   const rounds = workspace?.rounds || [];
@@ -1242,6 +1247,11 @@ export default function Demo2DReplayPreview({
           )}
           {error && <div className="absolute inset-0 z-30 flex items-center justify-center p-8 text-center text-[11px] text-cs2-text-muted">{error}</div>}
           <ReplaySceneCanvas
+            annotations={annotations}
+            annotationMode={annotationMode}
+            annotationColor={annotationColor}
+            onAnnotationCommit={onAnnotationCommit}
+            onAnnotationDelete={onAnnotationDelete}
             playheadStore={playheadStoreRef.current}
             frames={frames}
             playing={playing}

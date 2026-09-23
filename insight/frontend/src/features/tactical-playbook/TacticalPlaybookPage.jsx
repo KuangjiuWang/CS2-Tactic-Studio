@@ -31,6 +31,12 @@ export default function TacticalPlaybookPage() {
   const [selectedStepId, setSelectedStepId] = useState(null);
   const [stepTitle, setStepTitle] = useState("");
   const [stepNote, setStepNote] = useState("");
+  const [annotationMode, setAnnotationMode] = useState("select");
+  const [annotationColor, setAnnotationColor] = useState("#fbbf24");
+  const [annotationText, setAnnotationText] = useState("");
+  const [annotationUndo, setAnnotationUndo] = useState([]);
+  const [annotationRedo, setAnnotationRedo] = useState([]);
+  useEffect(() => { setAnnotationUndo([]); setAnnotationRedo([]); }, [selectedStepId]);
   const videoRef = useRef(null);
   const activeRound = useMemo(() => rounds.find((row) => Number(row.round_number) === Number(roundNumber)) || rounds[0], [rounds, roundNumber]);
   const actualRound = Number(activeRound?.round_number || 0);
@@ -181,6 +187,42 @@ export default function TacticalPlaybookPage() {
     }
   };
 
+  const selectedStep = savedTactic?.steps?.find((step) => step.id === selectedStepId);
+  const persistAnnotations = async (annotations) => {
+    if (!savedTactic || !selectedStep) return;
+    const { data } = await API.put(`/tactical/tactics/${savedTactic.id}/steps/${selectedStep.id}`, {
+      title: selectedStep.title, note: selectedStep.note, annotations,
+    });
+    setSavedTactic((current) => ({ ...current, steps: current.steps.map((step) => step.id === data.id ? data : step) }));
+  };
+  const commitAnnotation = async (annotation) => {
+    if (!selectedStep) return;
+    const previous = selectedStep.annotations || [];
+    setAnnotationUndo((items) => [...items, previous]);
+    setAnnotationRedo([]);
+    try { await persistAnnotations([...previous, { ...annotation, text: annotation.type === "note" ? annotationText.trim() : annotation.text, stepId: selectedStep.id }]); }
+    catch (reason) { setError(String(reason?.response?.data?.detail || reason.message)); }
+  };
+  const removeAnnotation = async (id) => {
+    if (!selectedStep) return;
+    const previous = selectedStep.annotations || [];
+    setAnnotationUndo((items) => [...items, previous]);
+    setAnnotationRedo([]);
+    try { await persistAnnotations(previous.filter((item) => item.id !== id)); }
+    catch (reason) { setError(String(reason?.response?.data?.detail || reason.message)); }
+  };
+  const changeAnnotationHistory = async (direction) => {
+    if (!selectedStep) return;
+    const source = direction === "undo" ? annotationUndo : annotationRedo;
+    if (!source.length) return;
+    const next = source.at(-1);
+    const current = selectedStep.annotations || [];
+    if (direction === "undo") { setAnnotationUndo(source.slice(0, -1)); setAnnotationRedo((items) => [...items, current]); }
+    else { setAnnotationRedo(source.slice(0, -1)); setAnnotationUndo((items) => [...items, current]); }
+    try { await persistAnnotations(next); }
+    catch (reason) { setError(String(reason?.response?.data?.detail || reason.message)); }
+  };
+
   const tacticButton = (item, depth = 0) => <button key={item.id} type="button" draggable onDragStart={(event) => event.dataTransfer.setData("application/x-tactic-id", item.id)} onClick={() => void openTactic(item.id)} style={{ paddingLeft: `${8 + depth * 12}px` }} className="block w-full truncate rounded py-1 text-left hover:bg-zinc-800">{item.name}</button>;
   const renderFolder = (folder, depth = 0) => <div key={folder.id}>
     <button type="button" draggable onDragStart={(event) => event.dataTransfer.setData("application/x-folder-id", folder.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => void moveItem(event, folder.id)} onClick={() => setSelectedFolderId(folder.id)} style={{ paddingLeft: `${8 + depth * 12}px` }} className={`w-full truncate rounded py-1 text-left ${selectedFolderId === folder.id ? "bg-zinc-700" : "hover:bg-zinc-800"}`}>▸ {folder.name}</button>
@@ -261,13 +303,22 @@ export default function TacticalPlaybookPage() {
       </aside>
       <main className="min-h-0 min-w-0 flex-1 overflow-hidden rounded bg-black">
         <div className={selected === "2d" ? "h-full" : "hidden"}>
-          <Demo2DReplayPreview key={`${demoPath}:${actualRound}`} workspace={workspace} demoPath={demoPath} players={workspace.players} teamAName={workspace.team_a_name} teamBName={workspace.team_b_name} initialRound={actualRound} externalSeekTick={replaySeek} externalPlaying={selected === "2d" ? playing : false} onPlayhead={onReplayTick} onPlaybackChange={onReplayPlaying} />
+          <Demo2DReplayPreview key={`${demoPath}:${actualRound}`} workspace={workspace} demoPath={demoPath} players={workspace.players} teamAName={workspace.team_a_name} teamBName={workspace.team_b_name} initialRound={actualRound} externalSeekTick={replaySeek} externalPlaying={selected === "2d" ? playing : false} onPlayhead={onReplayTick} onPlaybackChange={onReplayPlaying} annotations={selectedStep?.annotations || []} annotationMode={selectedStep ? annotationMode : "select"} annotationColor={annotationColor} onAnnotationCommit={(item) => void commitAnnotation(item)} onAnnotationDelete={(id) => void removeAnnotation(id)} />
         </div>
         {selected !== "2d" && <div className="flex h-full flex-col items-center justify-center">
           {videoUrl ? <video key={videoUrl} ref={videoRef} src={videoUrl} controls className="max-h-full max-w-full" onTimeUpdate={(event) => setTick(povSecondsToTick(event.currentTarget.currentTime, selectedPov.coverage_start_tick, tickRate))} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onRateChange={(event) => setSpeed(event.currentTarget.playbackRate)} onVolumeChange={(event) => setVolume(event.currentTarget.volume)} /> : <span className="text-zinc-500">{selectedPov?.status === "Failed" ? selectedPov.error : zh ? "真实 POV 尚未录制完成" : "Real POV is not ready"}</span>}
         </div>}
       </main>
     </div>
+    {selected === "2d" && <div className="flex justify-center px-3 pb-2"><div className="flex max-w-full gap-1 overflow-x-auto rounded-full border border-zinc-700 bg-zinc-900 p-1 text-xs shadow-lg">
+      {[["select", "Select"], ["pen", "Pen"], ["eraser", "Erase"], ["line", "Line"], ["arrow", "Arrow"], ["rectangle", "Rect"], ["circle", "Circle"], ["note", "Note"], ["smoke", "Smoke"], ["flash", "Flash"], ["he", "HE"], ["molotov", "Molly"], ["c4", "C4"]].map(([mode, label]) => <button type="button" key={mode} disabled={mode !== "select" && !selectedStep} onClick={() => setAnnotationMode(mode)} className={`shrink-0 rounded-full px-2 py-1 disabled:opacity-40 ${annotationMode === mode ? "bg-amber-500 text-black" : "hover:bg-zinc-700"}`}>{label}</button>)}
+      <button type="button" aria-label="CT color" onClick={() => setAnnotationColor("#38bdf8")} className="shrink-0 rounded-full bg-sky-500 px-2 text-black">CT</button>
+      <button type="button" aria-label="T color" onClick={() => setAnnotationColor("#fbbf24")} className="shrink-0 rounded-full bg-amber-400 px-2 text-black">T</button>
+      {annotationMode === "note" && <input aria-label="Annotation text" value={annotationText} onChange={(event) => setAnnotationText(event.target.value)} placeholder={zh ? "标注文字" : "Note text"} className="w-28 shrink-0 rounded bg-zinc-700 px-2 text-white" />}
+      <button type="button" disabled={!annotationUndo.length} onClick={() => void changeAnnotationHistory("undo")} className="shrink-0 px-2 disabled:opacity-40">Undo</button>
+      <button type="button" disabled={!annotationRedo.length} onClick={() => void changeAnnotationHistory("redo")} className="shrink-0 px-2 disabled:opacity-40">Redo</button>
+      <button type="button" disabled={!selectedStep} onClick={() => { if (window.confirm(zh ? "清空当前步骤的全部标注？" : "Clear all annotations in this step?")) { setAnnotationUndo((items) => [...items, selectedStep.annotations || []]); void persistAnnotations([]); } }} className="shrink-0 px-2 disabled:opacity-40">Clear</button>
+    </div></div>}
     <div className="flex items-center gap-3 border-t border-zinc-800 px-4 py-2 text-sm text-zinc-400">
       <span>{batch?.status || "Waiting"} · Tick {Math.round(tick)} · {Math.round((tick - Number(activeRound?.freeze_end_tick || 0)) / tickRate)}s</span>
       <label className="flex items-center gap-1"><input type="checkbox" checked={fullQuality} onChange={(event) => setFullQuality(event.target.checked)} />{zh ? "原画质/声音" : "Full quality/audio"}</label>
