@@ -110,3 +110,9 @@ def test_derivative_startup_does_not_migrate_upstream_data():
     function = source[source.index("fn writable_data_root"):source.index("fn ", source.index("fn writable_data_root") + 3)]
     assert 'app_data.join("CS2 Tactic Studio").join("data")' in function
     assert "desktop_data_migration.py" not in function
+
+
+def test_python_staging_resolves_nested_package_root_not_legacy_git_root():
+    script = (REPO_ROOT / "packaging" / "windows" / "package_portable.ps1").read_text(encoding="utf-8")
+    assert "git rev-parse --show-toplevel" not in script
+    assert "Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..\\..'" in script

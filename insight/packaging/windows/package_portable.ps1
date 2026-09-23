@@ -43,13 +43,11 @@ param(
 $ErrorActionPreference = "Stop"
 if ($PSVersionTable.PSVersion.Major -lt 5) { throw "PowerShell 5.1+ required" }
 
-try {
-    $Root = (git -C (Split-Path -Parent $MyInvocation.MyCommand.Path) rev-parse --show-toplevel)
-    if ($LASTEXITCODE -ne 0) { throw "git rev-parse failed (exit $LASTEXITCODE)" }
-    # git rev-parse --show-toplevel may return forward-slash paths on Windows; normalize.
-    $Root = $Root -replace '/', '\'
-} catch {
-    throw "Cannot locate git repository root. Ensure this script is inside a git working tree. Original error: $_"
+# This derivative lives under a larger, still-dirty legacy repository.  Git's
+# toplevel is *not* the package root and must never be used for staging/deletion.
+$Root = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..\..'))
+if (-not (Test-Path -LiteralPath (Join-Path $Root 'pyproject.toml'))) {
+    throw "Package root is invalid: $Root"
 }
 if (-not $OutDir) {
     $OutDir = Join-Path $Root "dist\CS2-Insight-Agent-portable"
