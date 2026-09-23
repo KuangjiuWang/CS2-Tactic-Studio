@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from fractions import Fraction
 import shutil
 import subprocess
 from pathlib import Path
@@ -92,7 +93,13 @@ def _probe_real_video(path: Path, expected_seconds: float) -> dict:
     # CS2/OBS wall-clock control is approximate; large discrepancies are failures.
     if abs(duration - expected_seconds) > max(5.0, expected_seconds * 0.2):
         raise ValueError(f"POV duration {duration:.1f}s differs from expected {expected_seconds:.1f}s")
-    return {"duration": duration, "video_path": str(path)}
+    video = next(s for s in streams if s.get("codec_type") == "video")
+    raw_rate = str(video.get("avg_frame_rate") or "0")
+    try:
+        fps = float(Fraction(raw_rate))
+    except (ValueError, ZeroDivisionError):
+        fps = 0.0
+    return {"duration": duration, "fps": fps, "video_path": str(path)}
 
 
 def _make_proxy(source: Path, destination: Path) -> None:
@@ -150,6 +157,9 @@ async def _run_batch(batch_id: str, jobs: list[dict], tick_rate: float) -> None:
                 await asyncio.to_thread(_make_proxy, dest, proxy)
                 metadata["video_path"] = str(dest)
                 metadata["proxy_path"] = str(proxy)
+                metadata["start_tick"] = job["coverage_start_tick"]
+                metadata["end_tick"] = job["coverage_end_tick"]
+                metadata["tick_rate"] = tick_rate
                 metadata["stream_url"] = f"/api/tactical/povs/{batch_id}/{index + 1}/video"
                 metadata["proxy_url"] = f"/api/tactical/povs/{batch_id}/{index + 1}/proxy"
                 item.update(status="Complete", **metadata)
@@ -183,7 +193,7 @@ async def prepare_povs(selection: RoundSelection):
         "id": batch_id, "status": "Waiting", "round_number": selection.round_number,
         "side": selection.side.upper(), "tick_rate": selection.analysis_workspace["tick_rate"],
         "players": [{
-            "player_name": j["player_name"], "steam_id64": j["steam_id64"],
+            "player_id": j["player_id"], "player_name": j["player_name"], "steam_id64": j["steam_id64"],
             "coverage_start_tick": j["coverage_start_tick"],
             "coverage_end_tick": j["coverage_end_tick"],
             "status": "Waiting", "video_path": None,

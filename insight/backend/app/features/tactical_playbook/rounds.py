@@ -110,6 +110,7 @@ def build_five_pov_jobs(demo_path: str, workspace: dict, round_number: int, side
             raise TacticalRoundError(f"recording plan for {name} has no usable segment: {plan.warnings}")
         segment = plan.segments[0]
         jobs.append({
+            "player_id": str(player.get("player_key") or player["steam_id64"]),
             "player_name": name,
             "steam_id64": player["steam_id64"],
             "team_key": team_key,
