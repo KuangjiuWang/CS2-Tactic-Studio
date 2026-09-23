@@ -12,12 +12,12 @@ $pnpm = (Get-Command pnpm.cmd -ErrorAction Stop).Source
 $backendProcess = $null
 $frontendProcess = $null
 try {
-    $backendProcess = Start-Process -FilePath $python -ArgumentList @('-m','uvicorn','app.main:app','--host','127.0.0.1','--port','19871') -WorkingDirectory $backend -WindowStyle Hidden -PassThru
+    $backendProcess = Start-Process -FilePath $python -ArgumentList @('-m','uvicorn','app.main:app','--host','127.0.0.1','--port','8000') -WorkingDirectory $backend -WindowStyle Hidden -PassThru
     $frontendProcess = Start-Process -FilePath $pnpm -ArgumentList @('run','dev','--host','127.0.0.1') -WorkingDirectory $frontend -WindowStyle Hidden -PassThru
     $ready = $false
     for ($attempt = 0; $attempt -lt 30; $attempt++) {
         try {
-            $response = Invoke-WebRequest -Uri 'http://127.0.0.1:19871/docs' -UseBasicParsing -TimeoutSec 1
+            $response = Invoke-WebRequest -Uri 'http://127.0.0.1:8000/docs' -UseBasicParsing -TimeoutSec 1
             if ($response.StatusCode -eq 200) { $ready = $true; break }
         } catch { Start-Sleep -Milliseconds 500 }
     }
