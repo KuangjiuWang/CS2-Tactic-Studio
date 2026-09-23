@@ -497,41 +497,10 @@ mod dropped_file_path_tests {
 fn writable_data_root(_app: &AppHandle, root: &Path, python: &Path) -> Result<PathBuf, String> {
     #[cfg(windows)]
     {
+        let _ = (root, python);
         let app_data = std::env::var_os("APPDATA")
             .map(PathBuf::from)
             .ok_or_else(|| "Windows APPDATA 环境变量不存在".to_string())?;
-        let migration_script = root.join("backend/app/desktop_data_migration.py");
-        if !migration_script.is_file() {
-            return Err(format!(
-                "未找到桌面数据迁移脚本：{}",
-                migration_script.display()
-            ));
-        }
-
-        let mut command = Command::new(python);
-        command
-            .arg("-I")
-            .arg(&migration_script)
-            .arg("--appdata")
-            .arg(&app_data)
-            .env("PYTHONNOUSERSITE", "1")
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        command.creation_flags(CREATE_NO_WINDOW);
-        let output = command
-            .output()
-            .map_err(|error| format!("无法执行桌面数据迁移：{error}"))?;
-        if !output.status.success() {
-            let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(if detail.is_empty() {
-                format!("桌面数据迁移失败，退出码：{}", output.status)
-            } else {
-                format!("桌面数据迁移失败：{detail}")
-            });
-        }
-
         let data_root = app_data.join("CS2 Tactic Studio").join("data");
         fs::create_dir_all(data_root.join("logs"))
             .map_err(|error| format!("无法创建应用数据目录 {}：{error}", data_root.display()))?;

@@ -103,3 +103,10 @@ def test_close_destroys_webview_before_waiting_for_backend():
     # window disappears immediately instead of freezing on screen.
     spawn = close_function.index("thread::spawn")
     assert spawn < destroy < stop
+
+
+def test_derivative_startup_does_not_migrate_upstream_data():
+    source = TAURI_RUNTIME.read_text(encoding="utf-8")
+    function = source[source.index("fn writable_data_root"):source.index("fn ", source.index("fn writable_data_root") + 3)]
+    assert 'app_data.join("CS2 Tactic Studio").join("data")' in function
+    assert "desktop_data_migration.py" not in function
