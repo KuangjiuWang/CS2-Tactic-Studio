@@ -25,6 +25,12 @@ export default function TacticalPlaybookPage() {
   const [tacticName, setTacticName] = useState("");
   const [savedTactic, setSavedTactic] = useState(null);
   const [playbooks, setPlaybooks] = useState([]);
+  const [folders, setFolders] = useState([]);
+  const [folderName, setFolderName] = useState("");
+  const [selectedFolderId, setSelectedFolderId] = useState(null);
+  const [selectedStepId, setSelectedStepId] = useState(null);
+  const [stepTitle, setStepTitle] = useState("");
+  const [stepNote, setStepNote] = useState("");
   const videoRef = useRef(null);
   const activeRound = useMemo(() => rounds.find((row) => Number(row.round_number) === Number(roundNumber)) || rounds[0], [rounds, roundNumber]);
   const actualRound = Number(activeRound?.round_number || 0);
@@ -39,9 +45,12 @@ export default function TacticalPlaybookPage() {
     setBatch(null);
   }, [demoPath, actualRound]);
 
-  useEffect(() => {
-    void API.get("/tactical/playbooks").then(({ data }) => setPlaybooks(data.tactics || [])).catch(() => {});
-  }, [savedTactic]);
+  const refreshTree = useCallback(async () => {
+    const { data } = await API.get("/tactical/playbooks");
+    setFolders(data.folders || []);
+    setPlaybooks(data.tactics || []);
+  }, []);
+  useEffect(() => { void refreshTree().catch(() => {}); }, [refreshTree, savedTactic]);
 
   useEffect(() => {
     if (!batch?.id || ["Complete", "Failed"].includes(batch.status)) return undefined;
@@ -76,6 +85,7 @@ export default function TacticalPlaybookPage() {
       const { data } = await API.post("/tactical/tactics", {
         name: tacticName.trim() || `${workspace.map_name} R${actualRound} ${side}`,
         pov_batch_id: batch?.id || null,
+        folder_id: selectedFolderId,
         selection: { demo_path: demoPath, analysis_workspace: workspace, round_number: actualRound, side },
       });
       setSavedTactic(data);
@@ -90,6 +100,9 @@ export default function TacticalPlaybookPage() {
     try {
       const { data } = await API.post(`/tactical/tactics/${savedTactic.id}/steps`, { tick: Math.round(tick) });
       setSavedTactic((current) => ({ ...current, steps: [...(current.steps || []), data] }));
+      setSelectedStepId(data.id);
+      setStepTitle(data.title);
+      setStepNote(data.note);
     } catch (reason) {
       setError(String(reason?.response?.data?.detail || reason.message));
     }
@@ -104,6 +117,8 @@ export default function TacticalPlaybookPage() {
     setRoundNumber(data.round_number);
     setSide(data.side);
     setSavedTactic(data);
+    setSelectedFolderId(data.folder_id || null);
+    setSelectedStepId(null);
     setSelected("2d");
     setReplaySeek(data.freeze_end_tick);
     if (data.metadata?.pov_batch_id) {
@@ -115,6 +130,63 @@ export default function TacticalPlaybookPage() {
       }
     }
   };
+
+  const createFolder = async () => {
+    if (!folderName.trim()) return;
+    try {
+      const { data } = await API.post("/tactical/folders", { name: folderName.trim(), parent_id: selectedFolderId });
+      setFolderName("");
+      setSelectedFolderId(data.id);
+      await refreshTree();
+    } catch (reason) {
+      setError(String(reason?.response?.data?.detail || reason.message));
+    }
+  };
+
+  const moveItem = async (event, folderId) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const tacticId = event.dataTransfer.getData("application/x-tactic-id");
+    const sourceFolderId = event.dataTransfer.getData("application/x-folder-id");
+    try {
+      if (tacticId) await API.patch(`/tactical/tactics/${tacticId}/folder`, { folder_id: folderId });
+      else if (sourceFolderId) await API.patch(`/tactical/folders/${sourceFolderId}/parent`, { parent_id: folderId });
+      await refreshTree();
+    } catch (reason) {
+      setError(String(reason?.response?.data?.detail || reason.message));
+    }
+  };
+
+  const saveStep = async () => {
+    if (!savedTactic || !selectedStepId) return;
+    const old = savedTactic.steps?.find((step) => step.id === selectedStepId);
+    try {
+      const { data } = await API.put(`/tactical/tactics/${savedTactic.id}/steps/${selectedStepId}`, {
+        title: stepTitle, note: stepNote, annotations: old?.annotations || [],
+      });
+      setSavedTactic((current) => ({ ...current, steps: current.steps.map((step) => step.id === data.id ? data : step) }));
+    } catch (reason) {
+      setError(String(reason?.response?.data?.detail || reason.message));
+    }
+  };
+
+  const deleteStep = async () => {
+    if (!savedTactic || !selectedStepId) return;
+    try {
+      await API.delete(`/tactical/tactics/${savedTactic.id}/steps/${selectedStepId}`);
+      setSavedTactic((current) => ({ ...current, steps: current.steps.filter((step) => step.id !== selectedStepId) }));
+      setSelectedStepId(null);
+    } catch (reason) {
+      setError(String(reason?.response?.data?.detail || reason.message));
+    }
+  };
+
+  const tacticButton = (item, depth = 0) => <button key={item.id} type="button" draggable onDragStart={(event) => event.dataTransfer.setData("application/x-tactic-id", item.id)} onClick={() => void openTactic(item.id)} style={{ paddingLeft: `${8 + depth * 12}px` }} className="block w-full truncate rounded py-1 text-left hover:bg-zinc-800">{item.name}</button>;
+  const renderFolder = (folder, depth = 0) => <div key={folder.id}>
+    <button type="button" draggable onDragStart={(event) => event.dataTransfer.setData("application/x-folder-id", folder.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => void moveItem(event, folder.id)} onClick={() => setSelectedFolderId(folder.id)} style={{ paddingLeft: `${8 + depth * 12}px` }} className={`w-full truncate rounded py-1 text-left ${selectedFolderId === folder.id ? "bg-zinc-700" : "hover:bg-zinc-800"}`}>▸ {folder.name}</button>
+    {folders.filter((child) => child.parent_id === folder.id).map((child) => renderFolder(child, depth + 1))}
+    {playbooks.filter((item) => item.folder_id === folder.id).map((item) => tacticButton(item, depth + 1))}
+  </div>;
 
   const selectView = (next) => {
     if (selected === "2d") setReplaySeek(null);
@@ -171,7 +243,12 @@ export default function TacticalPlaybookPage() {
       <aside className="flex w-[210px] shrink-0 flex-col gap-2 overflow-y-auto">
         <div className="rounded border border-zinc-800 bg-zinc-900 p-2 text-sm">
           <div className="mb-2 font-semibold">{zh ? "我的战术" : "My Playbooks"}</div>
-          {playbooks.map((item) => <button type="button" key={item.id} onClick={() => void openTactic(item.id)} className="block w-full truncate rounded px-2 py-1 text-left hover:bg-zinc-800">{item.name}</button>)}
+          <div onDragOver={(event) => event.preventDefault()} onDrop={(event) => void moveItem(event, null)}>
+            <button type="button" onClick={() => setSelectedFolderId(null)} className={`w-full rounded px-2 py-1 text-left ${selectedFolderId === null ? "bg-zinc-700" : "hover:bg-zinc-800"}`}>{zh ? "全部 / 根目录" : "Root"}</button>
+            {folders.filter((folder) => folder.parent_id === null).map((folder) => renderFolder(folder))}
+            {playbooks.filter((item) => item.folder_id === null).map((item) => tacticButton(item))}
+          </div>
+          <div className="mt-2 flex gap-1"><input aria-label="Folder name" value={folderName} onChange={(event) => setFolderName(event.target.value)} placeholder={zh ? "文件夹" : "Folder"} className="min-w-0 flex-1 rounded bg-zinc-800 px-1" /><button type="button" onClick={() => void createFolder()} className="rounded bg-zinc-700 px-2">+</button></div>
         </div>
         {players.map((player, index) => {
           const pov = batch?.players?.find((item) => item.steam_id64 === player.steam_id64);
@@ -197,7 +274,8 @@ export default function TacticalPlaybookPage() {
       <input aria-label="Tactic name" value={tacticName} onChange={(event) => setTacticName(event.target.value)} placeholder={zh ? "战术名称" : "Tactic name"} className="ml-auto w-40 rounded bg-zinc-800 px-2 py-1 text-zinc-100" />
       <button type="button" onClick={() => void saveTactic()} className="rounded bg-zinc-700 px-3 py-1 text-white">{zh ? "保存战术" : "Save tactic"}</button>
       <button type="button" onClick={() => void captureStep()} disabled={!savedTactic} className="rounded bg-zinc-700 px-3 py-1 text-white disabled:opacity-40">{zh ? "捕获步骤" : "Capture step"} {savedTactic?.steps?.length || 0}</button>
-      {(savedTactic?.steps || []).map((step) => <button type="button" key={step.id} onClick={() => { setTick(step.tick); setReplaySeek(step.tick); if (videoRef.current && selectedPov) videoRef.current.currentTime = tickToPovSeconds(step.tick, selectedPov.coverage_start_tick, tickRate, videoRef.current.duration || Infinity); }} className="rounded border border-zinc-700 px-2 py-1">{step.step_number}</button>)}
+      {(savedTactic?.steps || []).map((step) => <button type="button" key={step.id} onClick={() => { setSelectedStepId(step.id); setStepTitle(step.title); setStepNote(step.note); setTick(step.tick); setReplaySeek(step.tick); if (videoRef.current && selectedPov) videoRef.current.currentTime = tickToPovSeconds(step.tick, selectedPov.coverage_start_tick, tickRate, videoRef.current.duration || Infinity); }} className={`rounded border px-2 py-1 ${selectedStepId === step.id ? "border-amber-400" : "border-zinc-700"}`}>{step.step_number}</button>)}
     </div>
+    {selectedStepId && <div className="flex gap-2 border-t border-zinc-800 px-4 py-2"><input aria-label="Step title" value={stepTitle} onChange={(event) => setStepTitle(event.target.value)} className="w-40 rounded bg-zinc-800 px-2" /><input aria-label="Step note" value={stepNote} onChange={(event) => setStepNote(event.target.value)} className="min-w-0 flex-1 rounded bg-zinc-800 px-2" /><button type="button" onClick={() => void saveStep()}>{zh ? "保存步骤" : "Save step"}</button><button type="button" onClick={() => void deleteStep()}>{zh ? "删除" : "Delete"}</button></div>}
   </div>;
 }

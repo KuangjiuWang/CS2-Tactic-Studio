@@ -132,6 +132,42 @@ class TacticalStore:
             await db.commit()
         return {**row, "annotations": annotations or []}
 
+    async def update_step(self, tactic_id: str, step_id: str, *, title: str, note: str,
+                          annotations: list) -> dict:
+        await self.initialize()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("PRAGMA foreign_keys = ON")
+            cur = await db.execute("""UPDATE tactical_steps
+                SET title=?,note=?,annotations_json=?,updated_at=?
+                WHERE id=? AND tactic_id=?""",
+                (title, note, json.dumps(annotations, ensure_ascii=False), _now(), step_id, tactic_id))
+            if cur.rowcount != 1:
+                raise ValueError("step does not belong to this tactic")
+            await db.commit()
+        tactic = await self.get_tactic(tactic_id)
+        return next(step for step in tactic["steps"] if step["id"] == step_id)
+
+    async def delete_step(self, tactic_id: str, step_id: str) -> None:
+        await self.initialize()
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("DELETE FROM tactical_steps WHERE id=? AND tactic_id=?", (step_id, tactic_id))
+            if cur.rowcount != 1:
+                raise ValueError("step does not belong to this tactic")
+            await db.commit()
+
+    async def move_tactic(self, tactic_id: str, folder_id: str | None) -> None:
+        await self.initialize()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("PRAGMA foreign_keys = ON")
+            if folder_id is not None:
+                cursor = await db.execute("SELECT 1 FROM tactical_folders WHERE id=?", (folder_id,))
+                if await cursor.fetchone() is None:
+                    raise ValueError("destination folder does not exist")
+            cur = await db.execute("UPDATE tactical_tactics SET folder_id=?,updated_at=? WHERE id=?", (folder_id, _now(), tactic_id))
+            if cur.rowcount != 1:
+                raise ValueError("tactic does not exist")
+            await db.commit()
+
     async def list_tree(self) -> dict:
         await self.initialize()
         async with aiosqlite.connect(self.path) as db:

@@ -23,6 +23,11 @@ async def _tactic_steps_survive_reopen(tmp_path):
     assert reopened["side"] == "T"
     assert reopened["steps"][0]["tick"] == 250
     assert reopened["steps"][0]["annotations"] == [{"kind": "arrow"}]
+    step_id = reopened["steps"][0]["id"]
+    await store.update_step(tactic["id"], step_id, title="Execute", note="Flash first", annotations=[])
+    assert (await TacticalStore(path).get_tactic(tactic["id"]))["steps"][0]["note"] == "Flash first"
+    await store.delete_step(tactic["id"], step_id)
+    assert (await TacticalStore(path).get_tactic(tactic["id"]))["steps"] == []
 
 
 def test_folder_cycle_rejected(tmp_path):
@@ -35,3 +40,18 @@ async def _folder_cycle_rejected(tmp_path):
     child = await store.create_folder("Child", parent["id"])
     with pytest.raises(ValueError, match="descendant"):
         await store.move_folder(parent["id"], child["id"])
+
+
+def test_tactic_can_move_between_folders(tmp_path):
+    asyncio.run(_tactic_can_move_between_folders(tmp_path))
+
+
+async def _tactic_can_move_between_folders(tmp_path):
+    store = TacticalStore(tmp_path / "playbook.db")
+    folder = await store.create_folder("T side")
+    tactic = await store.create_tactic(
+        name="B split", map_name="de_mirage", side="T", demo_path="match.dem",
+        round_number=1, round_start_tick=1, freeze_end_tick=10, round_end_tick=100,
+    )
+    await store.move_tactic(tactic["id"], folder["id"])
+    assert (await TacticalStore(store.path).get_tactic(tactic["id"]))["folder_id"] == folder["id"]

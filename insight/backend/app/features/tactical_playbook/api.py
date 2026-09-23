@@ -239,6 +239,16 @@ class MoveFolder(BaseModel):
     parent_id: str | None = None
 
 
+class MoveTactic(BaseModel):
+    folder_id: str | None = None
+
+
+class EditStep(BaseModel):
+    title: str = ""
+    note: str = ""
+    annotations: list = []
+
+
 @router.get("/playbooks")
 async def list_playbooks():
     return await TacticalStore().list_tree()
@@ -298,3 +308,30 @@ async def add_step(tactic_id: str, body: AddStep):
     if not tactic["round_start_tick"] <= body.tick <= tactic["round_end_tick"]:
         raise HTTPException(422, "step tick is outside the source round")
     return await store.add_step(tactic_id, body.tick, body.title, body.note, body.annotations)
+
+
+@router.put("/tactics/{tactic_id}/steps/{step_id}")
+async def edit_step(tactic_id: str, step_id: str, body: EditStep):
+    try:
+        return await TacticalStore().update_step(tactic_id, step_id, title=body.title,
+                                                  note=body.note, annotations=body.annotations)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.delete("/tactics/{tactic_id}/steps/{step_id}")
+async def delete_step(tactic_id: str, step_id: str):
+    try:
+        await TacticalStore().delete_step(tactic_id, step_id)
+        return {"ok": True}
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.patch("/tactics/{tactic_id}/folder")
+async def move_tactic(tactic_id: str, body: MoveTactic):
+    try:
+        await TacticalStore().move_tactic(tactic_id, body.folder_id)
+        return {"ok": True}
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
