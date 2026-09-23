@@ -1,0 +1,5 @@
+import { contextBridge,ipcRenderer } from 'electron';
+import type { DesktopApi } from '../types';
+const listen=(channel:string,fn:(value:any)=>void)=>{const handler=(_:unknown,value:unknown)=>fn(value);ipcRenderer.on(channel,handler);return ()=>ipcRenderer.removeListener(channel,handler);};
+const api:DesktopApi={detect:()=>ipcRenderer.invoke('detect'),pickFile:kind=>ipcRenderer.invoke('pick-file',kind),pickDirectory:()=>ipcRenderer.invoke('pick-directory'),importDemo:path=>ipcRenderer.invoke('import-demo',path),openProject:path=>ipcRenderer.invoke('open-project',path),saveProject:(p,data)=>ipcRenderer.invoke('save-project',p,data),render:(p,m,s,e)=>ipcRenderer.invoke('render',p,m,s,e),cancelRender:()=>ipcRenderer.invoke('cancel-render'),importVideo:(p,id,start)=>ipcRenderer.invoke('import-video',p,id,start),onRender:fn=>listen('render-update',fn),onProgress:fn=>listen('progress',fn),mediaUrl:path=>'tactic-media://local/'+encodeURIComponent(path),importOverview:()=>ipcRenderer.invoke('import-overview')};
+contextBridge.exposeInMainWorld('desktop',api);

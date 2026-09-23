@@ -1,0 +1,12 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { RenderManager } from '../src/hlae/manager';
+import { detectPreferences } from '../src/main/detect';
+import type { Project, Match } from '../src/types';
+const directory=path.resolve('projects/dust2-test');
+const match:Match=JSON.parse(await fs.readFile(path.join(directory,'match.json'),'utf8'));
+const preferences=await detectPreferences(process.cwd());preferences.jobTimeoutMinutes=2;preferences.fps=30;
+const project:Project={version:1,name:'Dust2 real capture test',directory,demoPath:'D:/5EDemocache/g161-20260827215952884877980_de_dust2.dem',matchDataPath:'match.json',selectedTeam:'2',pov:[],tactics:[],preferences,mock:false};
+await fs.writeFile(path.join(directory,'project.json'),JSON.stringify(project,null,2));
+const manager=new RenderManager();let previous='';
+await manager.start(project,match,match.rounds[0].freezeEndTick+128,match.rounds[0].freezeEndTick+128+64*5,update=>{const s=update.jobs.map(j=>`${j.name}: ${j.status} ${j.message}`).join('\n');if(s!==previous){console.log(s);previous=s;}if(update.jobs.some(j=>j.status==='failed'))manager.cancel();});

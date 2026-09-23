@@ -1,0 +1,2 @@
+import { spawn } from 'node:child_process';
+export function run(exe:string,args:string[],signal?:AbortSignal):Promise<string>{return new Promise((resolve,reject)=>{const child=spawn(exe,args,{windowsHide:true,signal});let out='',err='';child.stdout?.on('data',b=>{out=(out+b).slice(-200000)});child.stderr?.on('data',b=>{err=(err+b).slice(-20000)});child.on('error',reject);child.on('close',code=>code===0?resolve(out):reject(new Error(`${exe} exited ${code}: ${err||out}`)));});}
