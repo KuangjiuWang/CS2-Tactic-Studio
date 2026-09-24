@@ -2,6 +2,8 @@
 
 A Windows desktop workspace for reviewing Counter-Strike 2 demos, building round tactics, and recording synchronized player POVs with CS2 and OBS.
 
+CS2 Tactic Studio is a derivative project based on [CS2 Insight Agent](https://github.com/DrEAmSs59/CS2-insight-agent), originally created by **DrEAmSs59**. This repository adapts that upstream project into the CS2 Tactic Studio desktop application. The upstream PolyForm Noncommercial 1.0.0 license and its required notices are retained in [`insight/LICENSE`](insight/LICENSE); see [`insight/THIRD_PARTY_LICENSES.md`](insight/THIRD_PARTY_LICENSES.md) for additional component terms.
+
 ## Current desktop app
 
 The maintained Tauri, Rust, React, and Python application is in [`insight/`](insight/). Start with its [Chinese guide](insight/README.md), [English guide](insight/README_EN.md), and [player guide](insight/PLAYER_GUIDE.md).

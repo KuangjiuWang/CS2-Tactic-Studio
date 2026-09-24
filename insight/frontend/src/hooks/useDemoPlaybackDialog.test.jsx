@@ -57,6 +57,23 @@ describe("useDemoPlaybackDialog restoration monitor", () => {
     expect(API.post).not.toHaveBeenCalled();
   });
 
+  it("offers native CS2 playback without enabling POV HUD injection", async () => {
+    getDemoPlaybackPreflight.mockResolvedValue({ cs2_path_configured: true });
+    playDemoInCs2.mockResolvedValue({ pov_hud_enabled: false });
+    render(<Harness />);
+    fireEvent.click(screen.getByRole("button", { name: "open" }));
+
+    const normalButton = await screen.findByRole("button", { name: /CS2 原生播放（兼容优先）/ });
+    fireEvent.click(normalButton);
+
+    await waitFor(() => expect(playDemoInCs2).toHaveBeenCalledWith({
+      id: 7,
+      path: null,
+      povHud: { enabled: false },
+    }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
   it("launches advanced playback directly from the preview and opens factual restoration", async () => {
     const customSkyboxId = `custom:${"b".repeat(32)}`;
     getDemoPlaybackPreflight.mockResolvedValue({

@@ -1,8 +1,6 @@
 <h1 align="center">
   <br>
-  <a href="https://github.com/DrEAmSs59/CS2-insight-agent/"><img src="https://raw.githubusercontent.com/DrEAmSs59/CS2-insight-agent/main/frontend/public/cs2-insight-logo.png" alt="CS2-Insight-Agent" width="140"></a>
-  <br>
-  CS2-Insight-Agent
+  CS2 Tactic Studio
   <br>
 </h1>
 
@@ -10,19 +8,21 @@
   <a href="./README.md"><img src="./asset/icon-cn.svg" alt="" width="20" height="20" style="vertical-align: middle;"> 简体中文</a> | <img src="./asset/icon-en.svg" alt="" width="20" height="20" style="vertical-align: middle;"> English
 </p>
 
-<h3 align="center"><b>CS2 Insight Agent: All-in-one CS2 Creation Suite</b> </h3>
+<h3 align="center"><b>CS2 Tactical Workspace: Demo Analysis & Synchronized POV Review</b> </h3>
 <h4 align="center">Demo Analysis · Custom Skins · OBS Auto-Recording · LiteCut · LLM Commentary<br>Zero Injection · Zero Hooks · Zero Game Reverse-Engineering · Low-Risk Local Replay</h4>
 
+<p align="center">This independent derivative project is based on <a href="https://github.com/DrEAmSs59/CS2-insight-agent">CS2 Insight Agent</a>, originally created by <b>DrEAmSs59</b>. The upstream PolyForm Noncommercial 1.0.0 license and required copyright notices are retained in this repository's <a href="./LICENSE">LICENSE</a>.</p>
+
 <p align="center">
-  <a href="https://github.com/DrEAmSs59/CS2-insight-agent/releases">
-    <img src="https://img.shields.io/github/v/release/DrEAmSs59/CS2-insight-agent"
+  <a href="https://github.com/KuangjiuWang/CS2-Tactic-Studio/releases">
+    <img src="https://img.shields.io/github/v/release/KuangjiuWang/CS2-Tactic-Studio"
          alt="release">
   </a>
-  <a href="https://github.com/DrEAmSs59/CS2-insight-agent/stargazers">
-    <img src="https://img.shields.io/github/stars/DrEAmSs59/CS2-insight-agent.svg"
+  <a href="https://github.com/KuangjiuWang/CS2-Tactic-Studio/stargazers">
+    <img src="https://img.shields.io/github/stars/KuangjiuWang/CS2-Tactic-Studio.svg"
          alt="Stars">
   </a>
-    <a href="https://github.com/DrEAmSs59/CS2-insight-agent/blob/main/LICENSE">
+    <a href="./LICENSE">
     <img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue"
          alt="License">
   </a>
@@ -30,8 +30,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/DrEAmSs59/CS2-insight-agent/blob/main/PLAYER_GUIDE_EN.md">User Guide</a> •
-  <a href="https://github.com/DrEAmSs59/CS2-insight-agent/blob/main/CONTRIBUTING_EN.md">Contributing</a> •
+  <a href="./PLAYER_GUIDE_EN.md">User Guide</a> •
+  <a href="./CONTRIBUTING_EN.md">Contributing</a> •
   <a href="https://www.bilibili.com/video/BV1PcVj69ExZ/">Video Tutorial</a> •
   <a href="#key-features">Key Features</a> •
   <a href="#installation">Installation</a> •
@@ -44,22 +44,22 @@
 ![screenshot](./asset/output-1080.gif)
 
 <p align="center">
-  <a href="https://www.bilibili.com/video/BV1PcVj69ExZ/">▶ Video Tutorial BV1PcVj69ExZ</a>
+  <a href="https://www.bilibili.com/video/BV1PcVj69ExZ/">▶ Upstream Project Tutorial BV1PcVj69ExZ</a>
 </p>
 
-<h4 align="center">Sample Output</h4>
+<h4 align="center">Upstream Project Examples</h4>
 
 <p align="center">
   <a href="https://www.bilibili.com/video/BV1ZkGi6YENF/">▶ BV1ZkGi6YENF</a> ·
   <a href="https://www.bilibili.com/video/BV1TPGq67EFS/">▶ BV1TPGq67EFS</a>
 </p>
-<p align="center"><sub>Intro/outro BGM and team logos added by the creator; game clips auto-edited by this tool</sub></p>
+<p align="center"><sub>These videos were published by the upstream project author; intro/outro BGM and team logos were added by the creator</sub></p>
 
 <p align="center">
   <a href="https://www.bilibili.com/video/BV1KF5s6nEed/">▶ BV1KF5s6nEed</a> ·
   <a href="https://www.bilibili.com/video/BV1G198BkEHd/">▶ BV1G198BkEHd</a>
 </p>
-<p align="center"><sub>Both intro/outro BGM and game clips produced by this tool</sub></p>
+<p align="center"><sub>These videos were published by the upstream author to demonstrate the upstream project's editing output</sub></p>
 
 ---
 
@@ -129,13 +129,13 @@ Built-in lightweight NLE for multi-track finishing on top of Insight recordings,
 
 ## Installation
 
-Download the latest `CS2-Insight-Agent-Setup-x.x.x.exe` from the [Releases page](https://github.com/DrEAmSs59/CS2-insight-agent/releases), run the installer and follow the prompts.
+Download the latest Windows installer from the [CS2 Tactic Studio Releases page](https://github.com/KuangjiuWang/CS2-Tactic-Studio/releases), run it, and follow the prompts.
 
 After installation, launch from desktop or start menu. **No browser or manual backend start is required.** The lightweight Tauri shell starts the bundled Python backend and renders the UI with the Windows system WebView2 runtime.
 
-The app does not run a background updater. Download new versions directly from the [Releases page](https://github.com/DrEAmSs59/CS2-insight-agent/releases).
+Download new versions directly from the [CS2 Tactic Studio Releases page](https://github.com/KuangjiuWang/CS2-Tactic-Studio/releases).
 
-> **Recommended: Installation path without Chinese characters.** e.g., `D:\CS2-Insight-Agent\` ✅, `D:\游戏工具\CS2-Insight-Agent\` ❌
+> **Recommended: Installation path without Chinese characters.** e.g., `D:\CS2 Tactic Studio\` ✅, `D:\游戏工具\CS2 Tactic Studio\` ❌
 
 ---
 
@@ -158,8 +158,8 @@ The app does not run a background updater. Download new versions directly from t
 
 ### Top contributors:
 
-<a href="https://github.com/DrEAmSs59/CS2-insight-agent/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=DrEAmSs59/CS2-insight-agent" alt="contrib.rocks image" />
+<a href="https://github.com/KuangjiuWang/CS2-Tactic-Studio/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=KuangjiuWang/CS2-Tactic-Studio" alt="contrib.rocks image" />
 </a>
 
 

@@ -11,6 +11,7 @@ describe("DemoPlayOptionsModal", () => {
 
   it("previews the in-game layout and offers advanced playback after preflight", () => {
     const onPlayAdvanced = vi.fn();
+    const onPlayNormal = vi.fn();
     const onRecordingSkyboxChange = vi.fn();
     const onRecordingMapMaterialChange = vi.fn();
     const onRecordingWeatherEffectChange = vi.fn();
@@ -31,6 +32,7 @@ describe("DemoPlayOptionsModal", () => {
         onRecordingMapMaterialChange={onRecordingMapMaterialChange}
         onRecordingWeatherEffectChange={onRecordingWeatherEffectChange}
         onPlayAdvanced={onPlayAdvanced}
+        onPlayNormal={onPlayNormal}
         onClose={() => {}}
       />,
     );
@@ -123,8 +125,10 @@ describe("DemoPlayOptionsModal", () => {
     expect(materialOption.compareDocumentPosition(skyboxOption) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByTestId("demo-play-weather-effect-option")).toBeNull();
     expect(skyboxOption.compareDocumentPosition(warning) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByText("将临时修改 CS2 文件")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /普通播放/ })).toBeNull();
+    expect(screen.getByText("仅高级播放会临时修改 CS2 文件")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /CS2 原生播放（兼容优先）/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /CS2 原生播放（兼容优先）/ }));
+    expect(onPlayNormal).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: /启动高级播放 Demo/ }));
     expect(onPlayAdvanced).toHaveBeenCalledTimes(1);
   });

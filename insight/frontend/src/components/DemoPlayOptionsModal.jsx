@@ -43,6 +43,7 @@ export default function DemoPlayOptionsModal({
   skyboxResources = [],
   onClose,
   onRetry,
+  onPlayNormal,
   onPlayAdvanced,
   onRecordingSkyboxChange,
   onRecordingMapMaterialChange,
@@ -393,7 +394,11 @@ export default function DemoPlayOptionsModal({
               </div>
             ) : null}
 
-            <div className="flex justify-end gap-2">
+            <div className="rounded-lg border border-sky-400/20 bg-sky-400/[0.06] px-3 py-2 text-[11px] leading-relaxed text-cs2-text-muted">
+              {t("playDemo.normalHint")}
+            </div>
+
+            <div className="flex flex-wrap justify-end gap-2">
               <button
                 type="button"
                 disabled={launching}
@@ -401,6 +406,16 @@ export default function DemoPlayOptionsModal({
                 className="rounded-lg border border-cs2-border px-3 py-2 text-xs font-semibold text-cs2-text-secondary hover:bg-cs2-bg-hover disabled:opacity-50"
               >
                 {t("common.cancel")}
+              </button>
+              <button
+                type="button"
+                disabled={launching}
+                onClick={onPlayNormal}
+                data-testid="demo-play-normal-option"
+                className="flex items-center gap-1.5 rounded-lg border border-cs2-border bg-cs2-bg-panel px-3 py-2 text-xs font-semibold text-cs2-text-primary hover:bg-cs2-bg-hover disabled:opacity-50"
+              >
+                {launchingMode === "normal" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5 fill-current" />}
+                {t("playDemo.launchNormal")}
               </button>
               <button
                 type="button"

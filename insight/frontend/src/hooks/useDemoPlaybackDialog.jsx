@@ -140,31 +140,34 @@ export function useDemoPlaybackDialog() {
     setRecordingWeatherEffect(nextWeatherEffect);
   }, []);
 
-  const launch = useCallback(async () => {
+  const launch = useCallback(async (mode = "advanced") => {
     if (!target || launchingMode) return;
-    if (PLAYER_ALIAS_ENTRY_VISIBLE
+    const advanced = mode === "advanced";
+    if (advanced && PLAYER_ALIAS_ENTRY_VISIBLE
         && aliasEditor.enabled
         && (!aliasesReady || hasInvalidPlayerAliases(aliasEditor))) {
       setError(t("playerAliases.invalid"));
       return;
     }
-    setLaunchingMode("advanced");
+    setLaunchingMode(mode);
     setError("");
     try {
       const launchResult = await playDemoInCs2({
         id: target.id,
         path: target.path,
-        advancedPlayback: {
-          enabled: true,
-          radar_mode: 0,
-          teamcounter_numeric: false,
-          skybox_id: recordingSkybox,
-          map_material_id: recordingMapMaterial,
-          weather_effect_id: recordingWeatherEffect,
-          ...(PLAYER_ALIAS_ENTRY_VISIBLE && playerAliasMaps(aliasEditor).playback
-            ? { player_aliases: playerAliasMaps(aliasEditor).playback }
-            : {}),
-        },
+        ...(advanced ? {
+          advancedPlayback: {
+            enabled: true,
+            radar_mode: 0,
+            teamcounter_numeric: false,
+            skybox_id: recordingSkybox,
+            map_material_id: recordingMapMaterial,
+            weather_effect_id: recordingWeatherEffect,
+            ...(PLAYER_ALIAS_ENTRY_VISIBLE && playerAliasMaps(aliasEditor).playback
+              ? { player_aliases: playerAliasMaps(aliasEditor).playback }
+              : {}),
+          },
+        } : { povHud: { enabled: false } }),
       });
       setOpen(false);
       setTarget(null);
@@ -177,7 +180,7 @@ export function useDemoPlaybackDialog() {
             found: true,
             session_id: String(launchResult.session_id),
             state: "running",
-            pov_hud_enabled: true,
+            pov_hud_enabled: advanced,
             restore: null,
           },
         });
@@ -233,7 +236,8 @@ export function useDemoPlaybackDialog() {
         skyboxResources={skyboxResources}
         onClose={close}
         onRetry={runPreflight}
-        onPlayAdvanced={() => void launch()}
+        onPlayNormal={() => void launch("normal")}
+        onPlayAdvanced={() => void launch("advanced")}
         onRecordingSkyboxChange={setRecordingSkybox}
         onRecordingMapMaterialChange={changeRecordingMapMaterial}
         onRecordingWeatherEffectChange={changeRecordingWeatherEffect}

@@ -28,7 +28,7 @@ pnpm.cmd run desktop:build:ver -- 2.4.0
    CI 或自定义密钥路径时改用环境变量 `TAURI_SIGNING_PRIVATE_KEY`（密钥内容或文件路径均可）与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。注意 PowerShell 无法设置「空字符串」环境变量（`$env:X = ""` 等于删除），空密码密钥请交给 `desktop:build:ver` 处理或在 CI YAML 中设置。
 
 3. **发布**：设置 R2 凭据（`R2_ENDPOINT` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET`，可选 `R2_PUBLIC_BASE_URL`、`RELEASE_NOTES`、`UPDATE_MODE=force|normal`）后执行 `pnpm run deploy:r2`。脚本会上传：
-   - `CS2 Insight Agent_<ver>_x64-setup.exe` — 完整安装包，同时是更新包；
+   - `CS2 Tactic Studio_<ver>_x64-setup.exe` — 完整安装包，同时是更新包；
    - `latest.json` — Tauri updater 清单（内嵌 `.sig` 签名，含 `update_mode`）；
    - `latest.yml` — electron-updater 桥接清单：仍在旧 Electron 版上的用户会把 Tauri 安装包当作更新静默安装，完成一次性迁移。
 
@@ -68,7 +68,7 @@ try {
 发布构建不要使用不带版本的 `pnpm run desktop:build`；该命令只使用仓库默认版本，仅适合本地验证完整安装链。日常开发应使用 `desktop:dev`，提交前的无安装包检查使用 `desktop:check`。正式产物固定输出到：
 
 ```text
-frontend/src-tauri/target/release/bundle/nsis/CS2 Insight Agent_<version>_x64-setup.exe
+frontend/src-tauri/target/release/bundle/nsis/CS2 Tactic Studio_<version>_x64-setup.exe
 ```
 
 如果需要从锁定依赖重建正式精简 Python runtime，先构建 lean wheel，再强制刷新：
@@ -96,7 +96,7 @@ Windows GNU 构建的主程序会动态加载同目录的 `WebView2Loader.dll`�
 
 ## Electron → Tauri 原位升级
 
-旧 Electron 可以安装在 `C:\Program Files\CS2 Insight Agent`，Tauri 的 `currentUser` 安装默认位于 `%LOCALAPPDATA%\CS2 Insight Agent`。程序目录不同是预期行为；持久化数据统一落在 `%APPDATA%\CS2 Insight Agent\data`，不依赖程序安装目录。
+旧 Electron 可以安装在 `C:\Program Files\CS2 Insight Agent`，Tauri 的 `currentUser` 安装默认位于 `%LOCALAPPDATA%\CS2 Tactic Studio`。程序目录不同是预期行为；迁移期间保留旧版数据目录，应用数据不会因程序安装位置变化而被删除。
 
 NSIS 升级桥按以下顺序执行，任何迁移或校验失败都会中止，且不会先卸载旧程序：
 

@@ -157,6 +157,7 @@ def test_normal_playback_uses_unique_demo_and_cleans_it(monkeypatch, tmp_path: P
     assert result["pov_hud_enabled"] is False
     assert session is not None and session.copied_demo.is_file()
     argv, kwargs = calls[0]
+    assert "-insecure" not in argv
     predict_index = argv.index("+cl_demo_predict")
     assert argv[predict_index:predict_index + 2] == ["+cl_demo_predict", "0"]
     assert predict_index < argv.index("+playdemo")
@@ -298,6 +299,7 @@ def test_pov_playback_installs_cfg_and_restores_after_exit(monkeypatch, tmp_path
     assert result["input_audio_volume_percent"] == 50
     assert manager.weather_effect_ids == ["snow"]
     assert result["weather_effect_id"] == "snow"
+    assert "-insecure" in calls[0][0]
     assert session is not None and session.copied_cfg is not None
     cfg_text = session.copied_cfg.read_text(encoding="ascii")
     assert "demoui false" not in cfg_text

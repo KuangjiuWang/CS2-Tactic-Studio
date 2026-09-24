@@ -446,11 +446,10 @@ class DemoPlaybackService:
                 argv = [
                     str(cs2_bin),
                     "-steam",
-                    "-insecure",
-                    "-novid",
-                    "-console",
-                    *_DEMO_PLAYBACK_FORCED_ARGS,
                 ]
+                if options.enabled:
+                    argv.append("-insecure")
+                argv.extend(["-novid", "-console", *_DEMO_PLAYBACK_FORCED_ARGS])
                 if copied_cfg is not None:
                     argv.extend(["+exec", stem])
                 else:

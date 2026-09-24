@@ -1,8 +1,6 @@
 <h1 align="center">
   <br>
-  <a href="https://github.com/DrEAmSs59/CS2-insight-agent/"><img src="https://raw.githubusercontent.com/DrEAmSs59/CS2-insight-agent/main/frontend/public/cs2-insight-logo.png" alt="CS2-Insight-Agent" width="140"></a>
-  <br>
-  CS2-Insight-Agent
+  CS2 Tactic Studio
   <br>
 </h1>
 
@@ -10,19 +8,21 @@
   <img src="./asset/icon-cn.svg" alt="" width="20" height="20" style="vertical-align: middle;"> 简体中文 | <a href="./README_EN.md"><img src="./asset/icon-en.svg" alt="" width="20" height="20" style="vertical-align: middle;"> English</a>
 </p>
 
-<h3 align="center"><b>CS2 洞察智能体：一站式 CS2 创作套件</b> </h3>
+<h3 align="center"><b>CS2 战术工作台：Demo 分析与同步 POV 复盘</b> </h3>
 <h4 align="center">Demo 分析 · 饰品换肤 · OBS 自动录制 · LiteCut 精剪 · LLM 锐评<br>0 注入 · 0 Hook · 0 逆向游戏进程 · 本地回放低风险</h4>
 
+<p align="center">本项目基于 <a href="https://github.com/DrEAmSs59/CS2-insight-agent">CS2 Insight Agent</a>（原作者 <b>DrEAmSs59</b>）继续开发，是独立的衍生项目；上游 PolyForm Noncommercial 1.0.0 许可证及必需版权声明保留在本仓库的 <a href="./LICENSE">LICENSE</a> 中。</p>
+
 <p align="center">
-  <a href="https://github.com/DrEAmSs59/CS2-insight-agent/releases">
-    <img src="https://img.shields.io/github/v/release/DrEAmSs59/CS2-insight-agent"
+  <a href="https://github.com/KuangjiuWang/CS2-Tactic-Studio/releases">
+    <img src="https://img.shields.io/github/v/release/KuangjiuWang/CS2-Tactic-Studio"
          alt="release">
   </a>
-  <a href="https://github.com/DrEAmSs59/CS2-insight-agent/stargazers">
-    <img src="https://img.shields.io/github/stars/DrEAmSs59/CS2-insight-agent.svg"
+  <a href="https://github.com/KuangjiuWang/CS2-Tactic-Studio/stargazers">
+    <img src="https://img.shields.io/github/stars/KuangjiuWang/CS2-Tactic-Studio.svg"
          alt="Stars">
   </a>
-    <a href="https://github.com/DrEAmSs59/CS2-insight-agent/blob/main/LICENSE">
+    <a href="./LICENSE">
     <img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue"
          alt="License">
   </a>
@@ -30,8 +30,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/DrEAmSs59/CS2-insight-agent/blob/main/PLAYER_GUIDE.md">使用指南</a> •
-  <a href="https://github.com/DrEAmSs59/CS2-insight-agent/blob/main/CONTRIBUTING.md">贡献指南</a> •
+  <a href="./PLAYER_GUIDE.md">使用指南</a> •
+  <a href="./CONTRIBUTING.md">贡献指南</a> •
   <a href="https://www.bilibili.com/video/BV1PcVj69ExZ/">视频教程</a> •
   <a href="#核心功能">核心功能</a> •
   <a href="#安装">快速安装</a> •
@@ -44,22 +44,22 @@
 ![screenshot](./asset/output-1080.gif)
 
 <p align="center">
-  <a href="https://www.bilibili.com/video/BV1PcVj69ExZ/">▶ 视频教程 BV1PcVj69ExZ</a>
+  <a href="https://www.bilibili.com/video/BV1PcVj69ExZ/">▶ 上游项目视频教程 BV1PcVj69ExZ</a>
 </p>
 
-<h4 align="center">成片展示</h4>
+<h4 align="center">上游项目成片案例</h4>
 
 <p align="center">
   <a href="https://www.bilibili.com/video/BV1ZkGi6YENF/">▶ BV1ZkGi6YENF</a> ·
   <a href="https://www.bilibili.com/video/BV1TPGq67EFS/">▶ BV1TPGq67EFS</a>
 </p>
-<p align="center"><sub>片头片尾 BGM、战队 Logo 由 UP 主自行合成；游戏片段由本项目自动剪辑</sub></p>
+<p align="center"><sub>这些视频由上游项目作者发布；片头片尾 BGM、战队 Logo 由 UP 主自行合成</sub></p>
 
 <p align="center">
   <a href="https://www.bilibili.com/video/BV1KF5s6nEed/">▶ BV1KF5s6nEed</a> ·
   <a href="https://www.bilibili.com/video/BV1G198BkEHd/">▶ BV1G198BkEHd</a>
 </p>
-<p align="center"><sub>片头片尾 BGM 及游戏片段均由本项目剪辑合成产出</sub></p>
+<p align="center"><sub>这些视频由上游项目作者发布，展示其项目的剪辑合成效果</sub></p>
 
 ---
 
@@ -137,7 +137,7 @@
 
 ## 安装
 
-前往 [Releases 页面](https://github.com/DrEAmSs59/CS2-insight-agent/releases) 下载最新的 `CS2-Insight-Agent-Setup-x.x.x.exe`，双击运行安装包，按提示完成安装。
+前往 [CS2 Tactic Studio Releases 页面](https://github.com/KuangjiuWang/CS2-Tactic-Studio/releases) 下载最新 Windows 安装包，双击运行并按提示完成安装。
 
 安装完成后从桌面或开始菜单启动程序，**无需打开浏览器，无需手动启动后端**。轻量 Tauri 桌面壳会自动启动内嵌 Python 后端，并使用 Windows 系统 WebView2 显示界面。
 
@@ -151,9 +151,9 @@
 工具链使用 `pnpm`/`pnpm-lock.yaml`，Rust 桌面壳使用 `cargo`/`Cargo.lock`；
 OBS 与 FFmpeg 仍由各自的运行时集成管理。
 
-当前不运行后台自动更新器；需要升级时，请直接从 [Releases 页面](https://github.com/DrEAmSs59/CS2-insight-agent/releases) 下载新版安装包。
+需要升级时，请从 [CS2 Tactic Studio Releases 页面](https://github.com/KuangjiuWang/CS2-Tactic-Studio/releases) 下载新版安装包。
 
-> **建议安装路径不含中文字符。** 例如 `D:\CS2-Insight-Agent\` ✅，`D:\游戏工具\CS2-Insight-Agent\` ❌
+> **建议安装路径不含中文字符。** 例如 `D:\CS2 Tactic Studio\` ✅，`D:\游戏工具\CS2 Tactic Studio\` ❌
 
 ---
 
@@ -176,8 +176,8 @@ OBS 与 FFmpeg 仍由各自的运行时集成管理。
 
 ### Top contributors:
 
-<a href="https://github.com/DrEAmSs59/CS2-insight-agent/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=DrEAmSs59/CS2-insight-agent" alt="contrib.rocks image" />
+<a href="https://github.com/KuangjiuWang/CS2-Tactic-Studio/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=KuangjiuWang/CS2-Tactic-Studio" alt="contrib.rocks image" />
 </a>
 
 
