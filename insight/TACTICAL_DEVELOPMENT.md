@@ -28,9 +28,12 @@ available. A Windows NSIS installer builds on this workstation with MSVC and
 the embedded Python runtime. The installed CS2, OBS and FFmpeg executables
 are all found by the application's path detectors.
 
-This is not yet a validated five-POV end-to-end product: no real CS2 demo was
-recorded through the complete queue during this development run; an importable
-demo and OBS scene / WebSocket setup are still needed for that acceptance test.
+This is not yet a validated five-POV end-to-end product. The supplied BLAST
+Ancient demo was extracted and parsed successfully (16 rounds, 10 players), and
+the Round 13 CT selection produced five correctly identified player jobs. It
+also exposed and fixed a non-monotonic round boundary that previously clipped
+those jobs. No real CS2 recording was run: this workstation has no OBS
+WebSocket configuration or scene, so the one-time OBS setup is still needed.
 The product also lacks `.cstactic` exchange and online sharing. The desktop
 startup smoke test and automated tests are separate from an actual CS2 engine
 capture; neither should be reported as proof that five real POVs render here.

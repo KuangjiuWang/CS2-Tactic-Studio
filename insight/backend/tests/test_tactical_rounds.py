@@ -52,6 +52,18 @@ def test_five_jobs_expose_real_death_coverage(tmp_path: Path, monkeypatch):
     assert all(job["request"]["target_player"]["steamid64"] for job in jobs)
 
 
+def test_out_of_order_next_round_boundary_cannot_truncate_round(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("app.recording.normalizer.read_demo_end_tick", lambda _path: 9000)
+    demo = tmp_path / "match.dem"
+    demo.touch()
+    parsed = workspace()
+    parsed["rounds"][1]["start_tick"] = 3500  # earlier than round 1's end at 4000
+    parsed["rounds"][0]["events"] = []  # all five players survive
+    jobs = build_five_pov_jobs(str(demo), parsed, 1, "T")
+    assert len(jobs) == 5
+    assert all(job["coverage_end_tick"] >= 4000 for job in jobs)
+
+
 def test_missing_player_identity_fails_closed():
     data = workspace()
     data["players"][0]["steam_id64"] = None

@@ -66,6 +66,13 @@ def build_five_pov_jobs(demo_path: str, workspace: dict, round_number: int, side
     row, team_key, players = select_round(workspace, round_number, side)
     rounds = workspace.get("rounds") or []
     next_row = next((r for r in rounds if _tick(r.get("round_number")) > round_number), None)
+    round_end_tick = _tick(row.get("round_end_tick"))
+    next_round_start_tick = _tick(next_row.get("start_tick")) if next_row else 0
+    # Some tournament demos have a long halftime/tech-pause and emit a later
+    # round_announce tick out of order. Never let that malformed boundary clip
+    # the current round's recording before its authoritative round_end event.
+    if next_round_start_tick <= round_end_tick:
+        next_round_start_tick = 0
     first_tick = _tick(workspace.get("match_start_tick"))
     end_tick = _tick(workspace.get("demo_end_tick"))
     if end_tick <= _tick(row.get("freeze_end_tick")):
@@ -99,8 +106,8 @@ def build_five_pov_jobs(demo_path: str, workspace: dict, round_number: int, side
                 round_start_tick=_tick(row.get("start_tick")),
                 freeze_start_tick=_tick(row.get("start_tick")),
                 freeze_end_tick=_tick(row.get("freeze_end_tick")),
-                round_end_tick=_tick(row.get("round_end_tick")),
-                next_round_start_tick=_tick(next_row.get("start_tick")) if next_row else None,
+                round_end_tick=round_end_tick,
+                next_round_start_tick=next_round_start_tick or None,
                 target_death_tick=death_tick,
             )],
             options=RecordingOptions(round_freeze_preroll_sec=2.0, round_death_post_sec=2.0),
