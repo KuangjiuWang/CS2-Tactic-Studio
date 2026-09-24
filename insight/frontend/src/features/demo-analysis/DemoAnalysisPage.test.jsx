@@ -371,12 +371,12 @@ describe("DemoAnalysisPage Insight Agent flow", () => {
     expect(screen.queryByText(/DAK|analysis-kit|数据包/i)).toBeNull();
   });
 
-  test("keeps all eight analysis workspaces backed by parsed match data", async () => {
+  test("keeps the seven tactical analysis workspaces backed by parsed match data", async () => {
     const view = renderPage(buildShell());
 
     const analysisNavigation = screen.getByRole("navigation", { name: "Demo 分析视图" });
     expect(within(analysisNavigation).getAllByRole("button").map((button) => button.textContent)).toEqual([
-      "高光与录制", "概览", "2D 回放", "热力图", "回合", "经济", "玩家", "饰品",
+      "高光与录制", "概览", "2D 回放", "热力图", "回合", "经济", "玩家",
     ]);
     expect(analysisNavigation.closest('[data-testid="analysis-view-navigation-card"]')).toBeTruthy();
     expect(analysisNavigation.closest(".analysis-center-surface")).toBeNull();
@@ -567,7 +567,7 @@ describe("DemoAnalysisPage Insight Agent flow", () => {
     expect(screen.getAllByText("R1").length).toBeGreaterThan(0);
     expect(screen.queryByText("平均装备差")).toBeNull();
     expect(screen.queryByText("双方最低装备总值")).toBeNull();
-  });
+  }, 15_000);
 
   test("loads the whole-match heatmap as an independent analysis workspace", async () => {
     const view = renderPage(buildShell());

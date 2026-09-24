@@ -5,7 +5,7 @@ import { mockProject } from '../demo/mock';
 import { newTactic,captureStep } from '../tactics/model';
 let replay:ReplayIndex;export const getReplay=()=>replay;
 interface State {
- project:Project;match:Match;currentTick:number;playing:boolean;playbackRate:number;selectedPlayer:string;selectedRound:number;viewMode:'pov'|'tactical';volume:number;
+ project:Project;match:Match;currentTick:number;playing:boolean;playbackRate:number;selectedPlayer:string;selectedRound:number;viewMode:'pov'|'tactical'|'library';volume:number;
  activeStep:number;activeTactic:number;editing:boolean;tool:string;color:string;showPaths:boolean;pathFrom:number;pathTo:number;floor:number;selectedObject:string|null;
  history:Tactic[];future:Tactic[];jobs:RenderJob[];error:string;busy:string;dirty:boolean;
  load:(data:LoadedProject)=>void;seek:(tick:number)=>void;selectPlayer:(id:string)=>void;set:(data:Partial<State>)=>void;

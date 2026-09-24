@@ -2292,7 +2292,7 @@ class OBSDirector:
                 pass
             self._ws = None
 
-    def test_obs_connection(self, *, handshake_timeout_sec: Optional[float] = None) -> dict:
+    def test_obs_connection(self, *, handshake_timeout_sec: Optional[float] = None, cleanup_legacy_sources: bool = True) -> dict:
         """Quick connection test — returns version info or error.
 
         handshake_timeout_sec:
@@ -2311,7 +2311,8 @@ class OBSDirector:
             else:
                 ws = obsws(self.obs_config.host, self.obs_config.port, self.obs_config.password)
             ws.connect()
-            cleanup_legacy_overlay_sources(ws)
+            if cleanup_legacy_sources:
+                cleanup_legacy_overlay_sources(ws)
             ver = ws.call(obs_requests.GetVersion())
             ws.disconnect()
             return {"ok": True}
@@ -3859,6 +3860,8 @@ class OBSDirector:
                         ) from _pov_e
 
                 # ── CS2 launch ────────────────────────────────────────────────
+                from .recording.progress import report_progress
+                report_progress("Launching CS2")
                 try:
                     if skybox_id_v3 in CHROMA_SKYBOX_IDS:
                         self._launch_cs2(
@@ -3888,6 +3891,7 @@ class OBSDirector:
                 # ── Wait for GSI ready ────────────────────────────────────────
                 try:
                     self._set_state(DirectorState.LOADING_DEMO, str(demo_abs))
+                    report_progress("Loading demo")
                     await self._await_gsi_startup_gate()
                     await self._sleep_abortable(8.0)
                     await self._await_cs2_window(40.0)

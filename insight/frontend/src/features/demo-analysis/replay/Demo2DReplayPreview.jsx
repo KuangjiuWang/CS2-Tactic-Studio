@@ -592,6 +592,8 @@ export default function Demo2DReplayPreview({
   layoutResetSignal = 0,
   externalSeekTick = null,
   externalPlaying = null,
+  externalSpeed = null,
+  compact = false,
   onPlayhead = null,
   onPlaybackChange = null,
   annotations = [],
@@ -623,6 +625,9 @@ export default function Demo2DReplayPreview({
     onPlaybackChangeRef.current?.(playing);
   }, [playing]);
   const [speed, setSpeed] = useSessionState(`${sessionPrefix}:speed`, 1);
+  useEffect(() => {
+    if (externalSpeed !== null && Number(externalSpeed) !== Number(speed)) setSpeed(Number(externalSpeed));
+  }, [externalSpeed, speed, setSpeed]);
   const playbackSampleStride = replaySampleStrideForRate(speed);
   const interpolatePlayback = playbackSampleStride === 1;
   const [loading, setLoading] = useState(false);
@@ -1149,6 +1154,26 @@ export default function Demo2DReplayPreview({
 
   if (!selectedRound) {
     return <div className="rounded-xl border border-cs2-border bg-cs2-bg-card p-12 text-center text-[11px] text-cs2-text-muted">当前 Demo 尚未生成正式回合窗口。</div>;
+  }
+
+  if (compact) {
+    return <section className="relative h-full min-h-0 w-full overflow-hidden bg-[#101820]" aria-label="2D tactical map">
+      {hasMapLayers && <div role="group" aria-label="地图楼层" className="absolute right-2 top-2 z-30 flex rounded border border-white/15 bg-[#121a20]/90 p-0.5">{[{ key: "upper", label: "上层" }, { key: "lower", label: "下层" }].map((item) => <button key={item.key} type="button" aria-pressed={mapLayer === item.key} onClick={() => setMapLayer(item.key)} className={`rounded px-2 py-1 text-[10px] ${mapLayer === item.key ? "bg-sky-700 text-white" : "text-zinc-300"}`}>{item.label}</button>)}</div>}
+      {loading && <div className="absolute inset-0 z-30 flex items-center justify-center bg-[#101820]/75"><Loader2 className="h-5 w-5 animate-spin text-amber-400" /><span className="ml-2 text-xs text-zinc-300">{loadHint || "正在加载 2D 回放"}</span></div>}
+      {error && <div className="absolute inset-0 z-30 flex items-center justify-center p-4 text-center text-xs text-rose-300">{error}</div>}
+      <ReplaySceneCanvas
+        annotations={annotations} annotationMode={annotationMode} annotationColor={annotationColor}
+        onAnnotationCommit={onAnnotationCommit} onAnnotationDelete={onAnnotationDelete}
+        playheadStore={playheadStoreRef.current} frames={frames} playing={playing}
+        frameIndex={frameIndex} sampleStride={playbackSampleStride} mapName={mapName}
+        hasMapLayers={hasMapLayers} mapLayer={mapLayer} transform={transform}
+        selectedRound={selectedRound} roundEvents={roundEvents} tickRate={tickRate}
+        workspacePlayers={workspacePlayers} playerLabelMode={playerLabelMode}
+        layers={layers} effectTracks={effectTracks} effectCapabilities={effectCapabilities}
+        smokeDebugLayer={smokeDebugOn ? smokeDebugLayer : "off"}
+      />
+      {!transform && !loading && <div className="absolute inset-x-0 bottom-3 text-center text-xs text-zinc-400">当前地图缺少坐标变换元数据</div>}
+    </section>;
   }
 
   return (

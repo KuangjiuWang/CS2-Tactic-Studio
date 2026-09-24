@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from ..models import RecordingPlan, RecordingSegment, SourceType, Perspective
+from ..progress import report_progress, require_verified_pov
 from ..platform_utils import voice_listen_mask_console_commands
 from .obs_client import OBSClient
 from .obs_recording_controller import OBSRecordingController, OBSControlError
@@ -386,6 +387,9 @@ async def _spec_by_slot_with_retry(
             if not target_steamid64:
                 return None
             verified = await verify_spec_target(target_steamid64)
+            if verified is None and require_verified_pov.get():
+                result_warnings.append(f"segment {segment_index}: SteamID verification unavailable; refusing unverified POV")
+                return False
             if verified is False:
                 result_warnings.append(
                     f"segment {segment_index}: spec verify failed for "
@@ -418,6 +422,9 @@ async def _spec_by_slot_with_retry(
                 )
             return True
         if verified is None:
+            if require_verified_pov.get():
+                result_warnings.append(f"segment {segment_index}: SteamID verification unavailable; refusing unverified POV")
+                return False
             result_warnings.append(
                 f"segment {segment_index}: spec verify inconclusive for "
                 f"{player_name} at slot {slot} — GSI silent"
@@ -522,6 +529,7 @@ class RecordingExecutor:
         return output_path if is_last else None
 
     async def execute(self, plan: RecordingPlan) -> ExecutionResult:
+        report_progress("Loading demo", plan.request_id)
         result = ExecutionResult(request_id=plan.request_id)
         active_segments = [s for s in plan.segments if not s.disabled]
 
@@ -796,6 +804,7 @@ class RecordingExecutor:
                     # Fade transitions are reserved for mid-clip segment boundaries only,
                     # so the global Desktop Audio track is never cross-faded at clip edges.
                     await self._ctrl.start_record_safe()
+                    report_progress("Recording", plan.request_id)
                     obs_record_mono = time.monotonic()
                     obs_recording_started = True
                     resume_ok = await demo_resume_silent_strict()

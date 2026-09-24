@@ -3,9 +3,7 @@ import { NavLink } from "react-router-dom";
 import {
   BarChart3,
   BookOpen,
-  Clapperboard,
   FileText,
-  Gem,
   Library,
   Moon,
   Package,
@@ -32,10 +30,7 @@ const NAV_ITEMS = [
   { to: "/library", labelKey: "nav.demoLibrary", icon: Library },
   { to: "/analysis", labelKey: "nav.analysis", icon: BarChart3 },
   { to: "/tactics", label: "Tactical Playbook", icon: BookOpen },
-  { to: "/cosmetics-workshop", labelKey: "nav.cosmeticsWorkshop", icon: Gem },
   { to: "/queue", labelKey: "nav.recordQueue", icon: Package, queue: true, guarded: true },
-  { to: "/montage", labelKey: "nav.montage", icon: Clapperboard, guarded: true },
-  { to: "/lite-cut", label: "LiteCut", icon: Clapperboard, guarded: true },
 ];
 
 function clampWidth(value) {

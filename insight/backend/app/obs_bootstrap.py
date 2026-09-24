@@ -6,10 +6,11 @@ This module deliberately owns a very small mutation surface:
 * while OBS is not running, it may back up and enable the existing
   obs-websocket configuration;
 * after a successful authenticated connection it persists the verified OBS
-  path and port in the application config.
+  path, port, and (when recovered) the existing local WebSocket credential
+  in the application config.
 
-It never changes authentication, passwords, profiles, scenes, audio, stream
-settings, or recording settings.
+It never changes OBS authentication, passwords, profiles, scenes, audio,
+stream settings, or recording settings.
 """
 
 from __future__ import annotations
@@ -168,11 +169,22 @@ def _default_launcher(obs_path: str) -> None:
 
 def _default_connection_tester(app_cfg: AppConfig) -> dict[str, Any]:
     director = OBSDirector(app_cfg.obs, app_cfg.cs2_path)
-    return director.test_obs_connection(handshake_timeout_sec=1.5)
+    return director.test_obs_connection(handshake_timeout_sec=1.5, cleanup_legacy_sources=False)
 
 
 def _event(step: str, status: str, message: str) -> dict[str, str]:
     return {"step": step, "status": status, "message": message}
+
+
+def _existing_websocket_password(config_path: Optional[Path]) -> str:
+    """Read the local OBS secret for a connection attempt; never expose it in API data."""
+    if not config_path or not config_path.is_file():
+        return ""
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8-sig"))
+        return str(raw.get("server_password") or "").strip() if isinstance(raw, dict) else ""
+    except (OSError, ValueError):
+        return ""
 
 
 def bootstrap_obs_environment(
@@ -215,8 +227,34 @@ def bootstrap_obs_environment(
     else:
         events.append(_event("inspect_websocket", "pending", "尚未生成 WebSocket 配置，将在 OBS 首次启动后验证"))
 
+    # OBS stores its WebSocket password locally. Reuse it only after a real
+    # authenticated handshake; do not return or log the secret.
+    fallback_password = (
+        _existing_websocket_password(ws_path)
+        if ws_state.get("auth_required") and request.password is None
+        else ""
+    )
+
+    def test_with_password_recovery() -> dict[str, Any]:
+        if fallback_password and fallback_password != app_cfg.obs.password:
+            saved_password = app_cfg.obs.password
+            app_cfg.obs.password = fallback_password
+            recovered = connection_tester(app_cfg)
+            if recovered.get("ok"):
+                events.append(_event("recover_password", "ok", "已用 OBS 本机配置恢复连接凭据"))
+                return recovered
+            app_cfg.obs.password = saved_password
+        return connection_tester(app_cfg)
+
+
     if running:
-        connected = connection_tester(app_cfg)
+        connected = test_with_password_recovery()
+        if not connected.get("ok") and ws_state.get("server_enabled") is not False:
+            for _ in range(min(max(0, connection_attempts - 1), 4)):
+                sleep(1.0)
+                connected = test_with_password_recovery()
+                if connected.get("ok"):
+                    break
         if connected.get("ok"):
             app_cfg.obs.obs_config_verified = True
             persist_config(app_cfg)
@@ -239,7 +277,7 @@ def bootstrap_obs_environment(
                 "events": events,
                 "websocket": ws_state,
             }
-        if ws_state.get("auth_required") and not str(app_cfg.obs.password or "").strip():
+        if ws_state.get("auth_required") and not str(app_cfg.obs.password or "").strip() and not fallback_password:
             events.append(_event("connect_websocket", "blocked", "WebSocket 需要密码"))
             return {"ok": False, "status": "needs_password", "events": events, "websocket": ws_state}
         events.append(_event("connect_websocket", "failed", connected.get("error") or "WebSocket 连接失败"))
@@ -286,8 +324,8 @@ def bootstrap_obs_environment(
     else:
         events.append(_event("enable_websocket", "skipped", "WebSocket 服务无需修改"))
 
-    if ws_state.get("auth_required") and not str(app_cfg.obs.password or "").strip():
-        events.append(_event("connect_websocket", "blocked", "WebSocket 需要现有密码；Agent 未读取或修改密码"))
+    if ws_state.get("auth_required") and not str(app_cfg.obs.password or "").strip() and not fallback_password:
+        events.append(_event("connect_websocket", "blocked", "WebSocket 需要现有密码"))
         return {
             "ok": False,
             "status": "needs_password",
@@ -329,7 +367,7 @@ def bootstrap_obs_environment(
 
     last_connection: dict[str, Any] = {"ok": False, "error": "OBS WebSocket 尚未就绪"}
     for _ in range(max(1, connection_attempts)):
-        last_connection = connection_tester(app_cfg)
+        last_connection = test_with_password_recovery()
         if last_connection.get("ok"):
             app_cfg.obs.obs_config_verified = True
             persist_config(app_cfg)

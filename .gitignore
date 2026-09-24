@@ -4,5 +4,14 @@ release/
 tools/
 projects/
 artifacts/
+.env
 .cache/
 *.log
+
+# Local release copies, caches, and developer-only credentials
+/CS2-Tactic-Studio/
+/CS2-Tactic-Studio-OBS-Updated/
+/.cache/
+/.env.*
+!/.env.example
+/.env

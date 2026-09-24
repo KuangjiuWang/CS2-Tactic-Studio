@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 import { AppShellProvider } from "../../context/AppShellContext";
 import TacticalPlaybookPage from "./TacticalPlaybookPage";
 import API from "../../api/api";
@@ -21,8 +22,8 @@ const workspace = {
   map_name: "de_mirage", tick_rate: 64, players,
   team_a_name: "Alpha", team_b_name: "Bravo",
   rounds: [
-    { round_number: 1, start_tick: 100, freeze_end_tick: 200, round_end_tick: 1000, team_a_side: "T", team_b_side: "CT" },
-    { round_number: 13, start_tick: 3000, freeze_end_tick: 3200, round_end_tick: 5000, team_a_side: "CT", team_b_side: "T" },
+    { round_number: 1, start_tick: 100, freeze_end_tick: 200, round_end_tick: 1000, team_a_side: "T", team_b_side: "CT", team_a_score_before: 0, team_b_score_before: 0, team_a_score_after: 1, team_b_score_after: 0 },
+    { round_number: 13, start_tick: 3000, freeze_end_tick: 3200, round_end_tick: 5000, team_a_side: "CT", team_b_side: "T", team_a_score_before: 9, team_b_score_before: 3 },
   ],
 };
 
@@ -32,16 +33,39 @@ describe("TacticalPlaybookPage", () => {
     API.post.mockReset();
   });
 
-  const show = () => render(<AppShellProvider value={{
+  const show = () => render(<MemoryRouter><AppShellProvider value={{
     analysisWorkspace: workspace,
     uploadedDemos: [{ path: "C:/demos/match.dem" }],
     currentMatchIndex: 0,
-  }}><TacticalPlaybookPage /></AppShellProvider>);
+  }}><TacticalPlaybookPage /></AppShellProvider></MemoryRouter>);
+
+  it("shows background recording failures without selecting a player and allows retry", async () => {
+    API.post.mockResolvedValueOnce({ data: { id: "failed", status: "Failed", error: "OBS connection failed", players: [] } });
+    show();
+    const button = screen.getByRole("button", { name: /生成五个真实 POV|Generate 5 real POVs/ });
+    fireEvent.click(button);
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("OBS connection failed"));
+    expect(button.disabled).toBe(false);
+  });
+
+  it("does not submit duplicate five-player batches", async () => {
+    let finish;
+    API.post.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    show();
+    const button = screen.getByRole("button", { name: /生成五个真实 POV|Generate 5 real POVs/ });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(API.post).toHaveBeenCalledTimes(1);
+    finish({ data: { id: "batch", status: "Complete", players: [] } });
+    await waitFor(() => expect(button.disabled).toBe(false));
+  });
 
   it("switches the actual T roster after halftime and submits that round", async () => {
     show();
+    expect(screen.getByText("0 : 0")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Round"), { target: { value: "13" } });
     expect(screen.getByTestId("pov-1").textContent).toContain("B0");
+    expect(screen.getByText("9 : 3")).toBeTruthy();
     API.post.mockResolvedValueOnce({ data: { id: "batch", status: "Complete", players: [] } });
     fireEvent.click(screen.getByRole("button", { name: /生成五个真实 POV|Generate 5 real POVs/ }));
     await waitFor(() => expect(API.post).toHaveBeenCalled());

@@ -7,7 +7,6 @@ import {
   CircleDollarSign,
   Film,
   Flame,
-  Gem,
   ListChecks,
   ListFilter,
   Loader2,
@@ -38,7 +37,6 @@ const TABS = [
   { key: "rounds", labelKey: "analysis.workspace.tabRounds", icon: ListChecks },
   { key: "economy", labelKey: "analysis.workspace.tabEconomy", icon: CircleDollarSign },
   { key: "players", labelKey: "analysis.workspace.tabPlayers", icon: Users },
-  { key: "cosmetics", labelKey: "analysis.workspace.tabCosmetics", icon: Gem },
 ];
 
 const ALL_TAG = "__all__";

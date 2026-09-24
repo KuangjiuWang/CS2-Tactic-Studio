@@ -59,7 +59,6 @@ const PlayerGameConfigPage = lazy(() => import("./pages/PlayerGameConfigPage"));
 const MatchHistoryPage = lazy(() => import("./pages/MatchHistoryPage"));
 const ObsAiTuningPreviewPage = lazy(() => import("./pages/ObsAiTuningPreviewPage"));
 const ObsAiEntryPreviewPage = lazy(() => import("./pages/ObsAiEntryPreviewPage"));
-const CosmeticsWorkshopPage = lazy(() => import("./features/cosmetics-workshop/CosmeticsWorkshopPage"));
 
 const DEFAULT_CS2_EXTRA_LAUNCH_ARGS = "-fullscreen";
 
@@ -76,9 +75,8 @@ export default function App() {
   const t = useT();
   const locale = useLocaleStore((s) => s.locale);
   const [backendReady, setBackendReady] = useState(false);
-  /** 后端就绪后的启动流程：先检查更新，再拉取首页配置检查 */
+  /** 后端配置就绪后尽快允许页面工作，健康检查在后台补齐。 */
   const [startupInitDone, setStartupInitDone] = useState(false);
-  const [startupInitPhase, setStartupInitPhase] = useState(/** @type {"update" | "config" | null} */ (null));
   const [initialQuickCheckStatus, setInitialQuickCheckStatus] = useState(null);
   const startupInitStartedRef = useRef(false);
   const startupUpdateWaitRef = useRef(/** @type {(() => void) | null} */ (null));
@@ -1222,23 +1220,19 @@ export default function App() {
     const runStartupInit = async () => {
       try {
         if ((await shouldCheckAppUpdates())) {
-          setStartupInitPhase("update");
           await fetchUpdateInfo({ manual: false, awaitDismiss: true });
-          if (cancelled) return;
         }
+      } catch {
+        // An optional update lookup must not keep the workspace locked.
+      }
+      if (cancelled) return;
+      setStartupInitDone(true);
 
-        setStartupInitPhase("config");
-        try {
-          const { data } = await API.get("/config/quick-check");
-          if (!cancelled) setInitialQuickCheckStatus(data);
-        } catch {
-          if (!cancelled) setInitialQuickCheckStatus(null);
-        }
-      } finally {
-        if (!cancelled) {
-          setStartupInitPhase(null);
-          setStartupInitDone(true);
-        }
+      try {
+        const { data } = await API.get("/config/quick-check");
+        if (!cancelled) setInitialQuickCheckStatus(data);
+      } catch {
+        if (!cancelled) setInitialQuickCheckStatus(null);
       }
     };
 
@@ -1431,7 +1425,6 @@ export default function App() {
   const isStandalonePreview = [
     "/obs-ai-preview",
     "/obs-ai-entry-preview",
-    "/cosmetics-workshop",
   ].includes(location.pathname);
 
   return (
@@ -1469,20 +1462,6 @@ export default function App() {
                   </div>
                 </div>
               </div>
-            ) : !startupInitDone ? (
-              <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-cs2-bg-dark/80 backdrop-blur-sm">
-                <div className="flex flex-col items-center gap-6 p-8 rounded-2xl border border-white/5 bg-cs2-bg-card shadow-2xl">
-                  <Loader2 className="h-12 w-12 animate-spin text-cs2-orange" />
-                  <div className="flex flex-col items-center gap-2">
-                    <h2 className="text-xl font-bold tracking-tight text-dynamic-white">
-                      {startupInitPhase === "config"
-                        ? t("app.startupCheckingConfig")
-                        : t("app.startupCheckingUpdate")}
-                    </h2>
-                    <p className="text-sm text-dynamic-zinc-400">{t("app.startupPleaseWait")}</p>
-                  </div>
-                </div>
-              </div>
             ) : null)}
 
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -1492,7 +1471,7 @@ export default function App() {
                 <Route path="/library" element={<DemoLibraryPage />} />
                 <Route path="/analysis" element={<DemoAnalysisPage />} />
                 <Route path="/tactics" element={<TacticalPlaybookPage />} />
-                <Route path="/cosmetics-workshop" element={<CosmeticsWorkshopPage />} />
+                <Route path="/cosmetics-workshop" element={<Navigate to="/tactics" replace />} />
                 <Route path="/demo-analysis-preview" element={<Navigate to="/analysis" replace />} />
                 <Route path="/queue" element={<RecordingQueuePage />} />
                 <Route path="/montage" element={<MontageWorkbenchPage />} />

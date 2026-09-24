@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from contextlib import asynccontextmanager
 import threading
 from typing import AsyncIterator
 import uuid
@@ -16,10 +17,17 @@ _closing = False
 
 
 async def runtime_session_dependency(request: Request) -> AsyncIterator[None]:
+    async with runtime_session(request.url.path):
+        yield
+
+
+@asynccontextmanager
+async def runtime_session(operation: str) -> AsyncIterator[None]:
+    """Also usable by background jobs which outlive their HTTP response."""
     global _owner
     claim = {
         "id": uuid.uuid4().hex,
-        "operation": request.url.path,
+        "operation": operation,
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
     with _claim_lock:

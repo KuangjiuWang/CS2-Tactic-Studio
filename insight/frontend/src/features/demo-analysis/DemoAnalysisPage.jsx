@@ -8,7 +8,6 @@ import RoundTimelineView from "./workspaces/timeline/RoundTimelineView";
 import WeaponKillsView from "./workspaces/WeaponKillsView";
 import Demo2DReplayPreview from "./replay/Demo2DReplayPreview";
 import DemoHeatmapView from "./replay/DemoHeatmapView";
-import CosmeticsView from "./cosmetics/CosmeticsView";
 import PlayerIdentityAvatar from "./cosmetics/PlayerIdentityAvatar";
 import { useReplayStore } from "./replay/replayStore";
 import {
@@ -49,6 +48,7 @@ export default function DemoAnalysisPage() {
   ));
   const sessionPrefix = `demo-analysis:${sessionIdentity}`;
   const [activeTab, setActiveTab] = useSessionState(`${sessionPrefix}:tab`, "highlights");
+  useEffect(() => { if (activeTab === "cosmetics") setActiveTab("replay"); }, [activeTab, setActiveTab]);
   const [activeHighlightView, setActiveHighlightView] = useSessionState(`${sessionPrefix}:highlight-view`, "clips");
   const [storedSelectedTag, setSelectedTag] = useSessionState(`${sessionPrefix}:tag`, ALL_TAG);
   const selectedTag = storedSelectedTag === "全部" ? ALL_TAG : storedSelectedTag;
@@ -73,7 +73,6 @@ export default function DemoAnalysisPage() {
   const teams = useMemo(() => splitTeams(s.players), [s.players]);
   const {
     avatars: steamAvatars,
-    onlineAssetsEnabled,
   } = useSteamPlayerAvatars(s.players);
   const teamAName = meta.team_a_name || firstTeamName(teams.a, "Team A");
   const teamBName = meta.team_b_name || firstTeamName(teams.b, "Team B");
@@ -319,17 +318,6 @@ export default function DemoAnalysisPage() {
                   data={workspace}
                   selectedPlayer={activePlayer}
                   onBackToOverview={() => setActiveTab("overview")}
-                />
-              )}
-
-              {activeTab === "cosmetics" && (
-                <CosmeticsView
-                  key={`${currentUpload?.id ?? "no-id"}:${currentUpload?.path || s.currentMatchIndex}`}
-                  workspace={workspace}
-                  selectedPlayer={selectedPlayer || workspace.players?.find((player) => playerIdentityKey(player) === activePlayer)}
-                  locale={locale}
-                  onlineAssetsEnabled={onlineAssetsEnabled}
-                  demoId={currentUpload?.id}
                 />
               )}
 

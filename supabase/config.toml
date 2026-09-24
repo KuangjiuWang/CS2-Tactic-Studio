@@ -1,0 +1,2 @@
+[functions.tactic-share]
+verify_jwt = false

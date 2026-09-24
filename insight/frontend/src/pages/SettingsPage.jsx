@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import API from "../api/api";
 import { calibrateObs, getObsConfigStatus } from "../api/obsConfigCenter";
+import { bootstrapObsTuningEnvironment } from "../api/obsTuning";
 import { useT } from "../i18n/useT.js";
 import { useLocaleStore } from "../i18n/localeStore.js";
 import { useAppShell } from "../context/AppShellContext";
@@ -184,6 +185,8 @@ export default function SettingsPage() {
   // OBS Config Check / Calibrate
   const [checking, setChecking] = useState(false);
   const [checkResult, setCheckResult] = useState(null);
+  const [obsRepairing, setObsRepairing] = useState(false);
+  const [obsRepairResult, setObsRepairResult] = useState(null);
   const [status, setStatus] = useState(null);
   const [statusRefreshing, setStatusRefreshing] = useState(false);
   const [calibrating, setCalibrating] = useState(false);
@@ -553,6 +556,26 @@ export default function SettingsPage() {
       setChecking(false);
     }
   }, [config, fetchObsStatus, t]);
+
+  const handleObsOneClick = useCallback(async () => {
+    if (obsRepairing) return;
+    setObsRepairing(true);
+    setObsRepairResult(null);
+    try {
+      const result = await bootstrapObsTuningEnvironment();
+      setObsRepairResult(result);
+      if (result.ok) {
+        const { data } = await API.get("config");
+        setConfig(data);
+        setCheckResult({ connected: true, path_ok: true });
+        await fetchObsStatus();
+      }
+    } catch (error) {
+      setObsRepairResult({ ok: false, status: "request_failed", events: [], message: error.response?.data?.detail || error.message });
+    } finally {
+      setObsRepairing(false);
+    }
+  }, [fetchObsStatus, obsRepairing]);
 
   const handleCalibrate = useCallback(async () => {
     setCalibrating(true);
@@ -1242,6 +1265,33 @@ export default function SettingsPage() {
                 search={search && !matches(t("settings.sectionObs") + " " + t("settings.labelObsHost") + " " + t("settings.labelObsPort") + " " + t("settings.labelObsPassword") + " " + t("settings.labelObsVerified"))}
                 contentClassName=""
               >
+                <div className="mb-3 rounded-xl border border-cs2-accent/30 bg-cs2-accent/5 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-semibold text-cs2-text-primary">OBS 一键连接与修复</div>
+                      <p className="mt-1 text-[10px] text-cs2-text-muted">自动检测安装、启动 OBS、修复关闭的 WebSocket，并验证连接；不会改动场景或录制设置。</p>
+                    </div>
+                    <button type="button" onClick={() => void handleObsOneClick()} disabled={obsRepairing} className="inline-flex items-center gap-2 rounded-lg bg-cs2-accent px-3 py-2 text-[11px] font-bold text-cs2-bg-dark disabled:opacity-50">
+                      {obsRepairing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                      {obsRepairing ? "正在连接和修复…" : "一键连接 / 修复 OBS"}
+                    </button>
+                  </div>
+                  {obsRepairResult && (
+                    <div role="status" className={`mt-2 text-[11px] ${obsRepairResult.ok ? "text-cs2-emerald-on-surface" : "text-amber-300"}`}>
+                      {obsRepairResult.ok ? "OBS 已连接，配置已保存。" : ({
+                        install_not_found: "未找到 OBS，请先安装 OBS Studio。",
+                        needs_safe_restart: "OBS 正在运行，但 WebSocket 已关闭。为保护可能正在进行的录制，请正常关闭 OBS 后再点此按钮。",
+                        needs_password: "OBS 密码无法自动读取，请在下方输入 WebSocket 密码并保存后重试。",
+                        invalid_password: "OBS 密码不正确，请在下方更新 WebSocket 密码并保存后重试。",
+                        websocket_config_unavailable: "OBS 尚未生成 WebSocket 配置。请先启动 OBS 完成初次设置后重试。",
+                        websocket_config_failed: "WebSocket 配置修复失败；请检查 OBS 配置文件权限。",
+                        launch_failed: "OBS 启动失败，请确认安装路径。",
+                        connection_failed: "WebSocket 仍未连接，请检查 OBS 的 WebSocket 设置与防火墙。",
+                      })[obsRepairResult.status] || obsRepairResult.message || "连接未完成，请检查 OBS 设置。"}
+                      {obsRepairResult.events?.length > 0 && <span className="mt-1 block text-cs2-text-muted">{obsRepairResult.events.map((event) => event.message).join(" · ")}</span>}
+                    </div>
+                  )}
+                </div>
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-[11px] font-semibold text-cs2-text-secondary">{t("settings.labelObsVerified")}</span>
                   <button

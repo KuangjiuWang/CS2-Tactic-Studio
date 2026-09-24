@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+from contextlib import AsyncExitStack
 from fractions import Fraction
 import subprocess
 from pathlib import Path
@@ -17,6 +19,9 @@ from ...env_utils import get_data_dir
 from ...env_utils import load_config
 from ...recording.api import QueueRecordingRequest, execute_recording_queue, recording_result_observer
 from ...recording.models import RecordingRequestDTO
+from ...recording.progress import recording_progress_observer, require_verified_pov
+from ...runtime_session import runtime_session
+from ...obs_bootstrap import bootstrap_obs_environment, ObsBootstrapRequest
 from ...video_composer import MontageComposerError, resolve_ffmpeg_binary, resolve_ffprobe_binary
 from .rounds import TacticalRoundError, build_five_pov_jobs, select_round
 from .storage import TacticalStore
@@ -24,6 +29,27 @@ from .storage import TacticalStore
 router = APIRouter(prefix="/api/tactical", tags=["tactical-playbook"])
 _batches: dict[str, dict] = {}
 _active_batch: str | None = None
+_batch_tasks: set[asyncio.Task] = set()
+logger = logging.getLogger(__name__)
+
+
+def _persist_batch(state: dict) -> None:
+    path = _batch_state_path(state["id"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"metadata-{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+async def _prepare_obs() -> None:
+    result = await asyncio.to_thread(bootstrap_obs_environment, load_config(), ObsBootstrapRequest())
+    if not result.get("ok"):
+        messages = [event["message"] for event in result.get("events", [])
+                    if event.get("status") in {"blocked", "failed"} and event.get("message")]
+        raise ValueError("OBS 自动连接失败：" + ("；".join(messages) or result.get("status", "unknown")))
 
 
 def _batch_state_path(batch_id: str) -> Path:
@@ -40,6 +66,12 @@ def _get_batch(batch_id: str) -> dict | None:
     if not path.is_file():
         return None
     state = json.loads(path.read_text(encoding="utf-8"))
+    if state.get("status") not in {"Complete", "Failed"} and batch_id != _active_batch:
+        state.update(status="Failed", error="上次录制被中断，请重新生成 POV。")
+        for item in state.get("players", []):
+            if item.get("status") not in {"Complete", "Failed"}:
+                item.update(status="Failed", error=state["error"])
+        _persist_batch(state)
     _batches[batch_id] = state
     return state
 
@@ -142,16 +174,10 @@ async def _run_batch(batch_id: str, jobs: list[dict], tick_rate: float) -> None:
     global _active_batch
     state = _batches[batch_id]
     finalizers: dict[str, asyncio.Task] = {}
+    session = AsyncExitStack()
 
     def persist_state() -> None:
-        path = _batch_state_path(batch_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f"metadata-{uuid4().hex}.tmp")
-        try:
-            temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-            temporary.replace(path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        _persist_batch(state)
 
     async def finalize(index: int, result: dict) -> None:
         job = jobs[index]
@@ -186,9 +212,19 @@ async def _run_batch(batch_id: str, jobs: list[dict], tick_rate: float) -> None:
         persist_state()
 
     try:
+        await session.enter_async_context(runtime_session("/api/tactical/prepare-povs"))
+        state["status"] = "Connecting OBS"
+        persist_state()
+        await _prepare_obs()
         state["status"] = "Recording"
+        persist_state()
         requests = [RecordingRequestDTO.model_validate(j["request"]) for j in jobs]
         by_id = {j["request"]["request_id"]: index for index, j in enumerate(jobs)}
+        def on_progress(status: str, request_id: str | None) -> None:
+            state["status"] = status
+            if request_id in by_id:
+                state["players"][by_id[request_id]]["status"] = status
+            persist_state()
         def on_result(result: dict) -> None:
             request_id = result.get("request_id")
             index = by_id.get(request_id)
@@ -196,26 +232,41 @@ async def _run_batch(batch_id: str, jobs: list[dict], tick_rate: float) -> None:
                 state["players"][index]["status"] = "Verifying" if result.get("success") else "Failed"
                 finalizers[request_id] = asyncio.create_task(finalize(index, result))
         observer_token = recording_result_observer.set(on_result)
+        progress_token = recording_progress_observer.set(on_progress)
+        verify_token = require_verified_pov.set(True)
         try:
             results = await execute_recording_queue(QueueRecordingRequest(requests=requests), None)
         finally:
             recording_result_observer.reset(observer_token)
+            recording_progress_observer.reset(progress_token)
+            require_verified_pov.reset(verify_token)
         by_request = {r.get("request_id"): r for r in results if isinstance(r, dict)}
         for request_id, index in by_id.items():
             if request_id not in finalizers:
                 finalizers[request_id] = asyncio.create_task(finalize(index, by_request.get(request_id) or {}))
         if finalizers:
+            state["status"] = "Encoding"
+            persist_state()
             await asyncio.gather(*finalizers.values())
         state["status"] = "Complete" if all(p["status"] == "Complete" for p in state["players"]) else "Failed"
     except Exception as exc:  # surface real CS2/OBS failures, never synthesize videos
+        logger.exception("Five-POV batch %s failed", batch_id)
         if finalizers:
             await asyncio.gather(*finalizers.values(), return_exceptions=True)
         state["status"] = "Failed"
-        state["error"] = str(exc)
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        state["error"] = (detail.get("message") or json.dumps(detail, ensure_ascii=False)) if isinstance(detail, dict) else str(detail)
         for item in state["players"]:
             if item["status"] not in {"Complete", "Failed"}:
-                item.update(status="Failed", error=str(exc))
+                item.update(status="Failed", error=state["error"])
+    except asyncio.CancelledError:
+        state.update(status="Failed", error="录制被中断，请重新生成 POV。")
+        for item in state["players"]:
+            if item["status"] not in {"Complete", "Failed"}:
+                item.update(status="Failed", error=state["error"])
+        raise
     finally:
+        await session.aclose()
         _active_batch = None
         try:
             persist_state()
@@ -240,8 +291,11 @@ async def prepare_povs(selection: RoundSelection):
             "status": "Waiting", "video_path": None,
         } for j in jobs],
     }
+    _persist_batch(_batches[batch_id])
     _active_batch = batch_id
-    asyncio.create_task(_run_batch(batch_id, jobs, float(selection.analysis_workspace["tick_rate"])))
+    task = asyncio.create_task(_run_batch(batch_id, jobs, float(selection.analysis_workspace["tick_rate"])))
+    _batch_tasks.add(task)
+    task.add_done_callback(_batch_tasks.discard)
     return _batches[batch_id]
 
 

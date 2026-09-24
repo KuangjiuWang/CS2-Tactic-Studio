@@ -1,5 +1,5 @@
 import type { MapOverview } from '../types';
-export function worldToRadar(map:MapOverview,x:number,y:number,z=0):[number,number]{
+export function worldToRadar(map:MapOverview,x:number,y:number,_z=0):[number,number]{
   let u=(x-map.pos_x)/(map.scale*1024),v=(map.pos_y-y)/(map.scale*1024);
   if(map.rotation){const a=map.rotation*Math.PI/180,dx=u-.5,dy=v-.5;u=.5+dx*Math.cos(a)-dy*Math.sin(a);v=.5+dx*Math.sin(a)+dy*Math.cos(a);}
   return [u,v];

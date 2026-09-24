@@ -11,7 +11,7 @@ from app.obs_bootstrap import (
 )
 
 
-def _write_ws_config(path: Path, *, enabled: bool, auth_required: bool = False) -> None:
+def _write_ws_config(path: Path, *, enabled: bool, auth_required: bool = False, password: str = "keep-this-secret") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
@@ -19,7 +19,7 @@ def _write_ws_config(path: Path, *, enabled: bool, auth_required: bool = False) 
                 "server_enabled": enabled,
                 "server_port": 4455,
                 "auth_required": auth_required,
-                "server_password": "keep-this-secret",
+                "server_password": password,
                 "first_load": False,
             }
         ),
@@ -104,11 +104,11 @@ def test_bootstrap_enables_launches_connects_and_persists(tmp_path):
     assert state["minimized"] is True
 
 
-def test_bootstrap_requests_existing_password_without_launching(tmp_path):
+def test_bootstrap_requests_password_when_obs_has_no_saved_password(tmp_path):
     obs_exe = tmp_path / "obs64.exe"
     obs_exe.write_bytes(b"MZ")
     ws_config = tmp_path / "config.json"
-    _write_ws_config(ws_config, enabled=True, auth_required=True)
+    _write_ws_config(ws_config, enabled=True, auth_required=True, password="")
     cfg = AppConfig(obs=OBSConfig(obs_path=str(obs_exe), password=""))
     launched = []
 
@@ -124,8 +124,82 @@ def test_bootstrap_requests_existing_password_without_launching(tmp_path):
     assert result["ok"] is False
     assert result["status"] == "needs_password"
     assert launched == []
-    assert result["websocket"]["password_configured"] is True
+    assert result["websocket"]["password_configured"] is False
     assert "server_password" not in result["websocket"]
+
+
+def test_bootstrap_recovers_stale_app_password_from_local_obs_and_never_exposes_it(tmp_path):
+    obs_exe = tmp_path / "obs64.exe"
+    obs_exe.write_bytes(b"MZ")
+    ws_config = tmp_path / "config.json"
+    _write_ws_config(ws_config, enabled=True, auth_required=True)
+    cfg = AppConfig(obs=OBSConfig(obs_path=str(obs_exe), password="old-password"))
+    persisted = []
+
+    result = bootstrap_obs_environment(
+        cfg,
+        ObsBootstrapRequest(),
+        websocket_config_path=ws_config,
+        process_checker=lambda _path: True,
+        connection_tester=lambda app_cfg: {"ok": app_cfg.obs.password == "keep-this-secret"},
+        persist_config=lambda app_cfg: persisted.append(app_cfg.obs.password),
+        minimizer=lambda: None,
+    )
+
+    assert result["ok"] is True
+    assert persisted == ["keep-this-secret"]
+    assert "keep-this-secret" not in json.dumps(result)
+
+
+def test_bootstrap_recovers_password_after_launch(tmp_path):
+    obs_exe = tmp_path / "obs64.exe"
+    obs_exe.write_bytes(b"MZ")
+    ws_config = tmp_path / "config.json"
+    _write_ws_config(ws_config, enabled=True, auth_required=True)
+    cfg = AppConfig(obs=OBSConfig(obs_path=str(obs_exe), password=""))
+    state = {"running": False}
+
+    result = bootstrap_obs_environment(
+        cfg,
+        ObsBootstrapRequest(),
+        websocket_config_path=ws_config,
+        process_checker=lambda _path: state["running"],
+        launcher=lambda _path: state.update(running=True),
+        connection_tester=lambda app_cfg: {"ok": state["running"] and app_cfg.obs.password == "keep-this-secret"},
+        sleep=lambda _seconds: None,
+        persist_config=lambda _cfg: None,
+        minimizer=lambda: None,
+        process_wait_attempts=1,
+        connection_attempts=1,
+    )
+
+    assert result["ok"] is True
+    assert result["launched_obs"] is True
+    assert cfg.obs.password == "keep-this-secret"
+
+
+def test_bootstrap_retries_running_obs_until_websocket_is_ready(tmp_path):
+    obs_exe = tmp_path / "obs64.exe"
+    obs_exe.write_bytes(b"MZ")
+    ws_config = tmp_path / "config.json"
+    _write_ws_config(ws_config, enabled=True)
+    cfg = AppConfig(obs=OBSConfig(obs_path=str(obs_exe)))
+    attempts = []
+
+    result = bootstrap_obs_environment(
+        cfg,
+        ObsBootstrapRequest(),
+        websocket_config_path=ws_config,
+        process_checker=lambda _path: True,
+        connection_tester=lambda _cfg: attempts.append(1) or {"ok": len(attempts) == 3},
+        sleep=lambda _seconds: None,
+        persist_config=lambda _cfg: None,
+        minimizer=lambda: None,
+        connection_attempts=5,
+    )
+
+    assert result["ok"] is True
+    assert len(attempts) == 3
 
 
 def test_bootstrap_requires_safe_restart_if_running_server_is_disabled(tmp_path):

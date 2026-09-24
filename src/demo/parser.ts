@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { Match, ReplayFrame, Round, Utility, UtilityKind } from '../types';
 type Row = Record<string, any>;
-export async function parseDemo(file:string,output:string,progress=(s:string)=>{}) {
+export async function parseDemo(file:string,output:string,progress=(_s:string)=>{}) {
   progress('Reading demo header and players');
   const header=parser.parseHeader(file) as Row;
   if(!String(header.demo_file_stamp).startsWith('PBDEMS2'))throw new Error('Only CS2 / PBDEMS2 demos are supported.');
@@ -38,8 +38,8 @@ export async function parseDemo(file:string,output:string,progress=(s:string)=>{
   const initial=frames.find(f=>f.tick>=rounds[0].freezeEndTick)??frames[0];
   const players=info.filter(p=>initial.players.some(v=>v.id===String(p.steamid)&&[2,3].includes(v.side))).map(p=>({id:String(p.steamid),steamId:String(p.steamid),name:String(p.name),teamId:String(initial.players.find(v=>v.id===String(p.steamid))!.side)}));
   const teams=[2,3].map(side=>({id:String(side),name:side===2?'Team A':'Team B',playerIds:players.filter(p=>p.teamId===String(side)).map(p=>p.id)}));
-  let score:[number,number]=[0,0];
-  for(const round of rounds){round.score=[...score];const f=frames.find(v=>v.tick>=round.freezeEndTick);const sideA=f?.players.find(p=>teams[0].playerIds.includes(p.id))?.side;if(round.winner){if(round.winner===sideA)score[0]++;else score[1]++;}}
+  const score:[number,number]=[0,0];
+  for(const round of rounds){round.score=[...score];const f=frames.find(v=>v.tick>=round.freezeEndTick&&v.tick<=round.endTick);const sideA=f?.players.find(p=>teams[0].playerIds.includes(p.id))?.side;if(sideA===2||sideA===3)round.teamASide=sideA;if(round.winner){if(round.winner===sideA)score[0]++;else score[1]++;}}
   const utility:Utility[]=[];
   const kinds:Record<string,[UtilityKind,string,number]>={smokegrenade_detonate:['smoke','smokegrenade_expired',22],flashbang_detonate:['flash','',.6],hegrenade_detonate:['he','',.8],inferno_startburn:['molotov','inferno_expire',7],decoy_started:['decoy','decoy_expired',15]};
   for(const e of raw){const k=kinds[e.event_name];if(k){const expire=raw.find(x=>x.event_name===k[1]&&x.entityid===e.entityid&&x.tick>e.tick);utility.push({id:`${e.event_name}-${e.tick}-${e.entityid??utility.length}`,kind:k[0],x:e.x??e.user_X,y:e.y??e.user_Y,z:e.z??e.user_Z??0,startTick:e.tick,endTick:expire?.tick??e.tick+k[2]*tickRate,playerId:e.user_steamid});}if(e.event_name==='bomb_planted'||e.event_name==='bomb_dropped'){const end=raw.find(x=>x.tick>e.tick&&['bomb_pickup','bomb_defused','bomb_exploded','round_start'].includes(x.event_name));utility.push({id:`c4-${e.tick}`,kind:'c4',x:e.user_X,y:e.user_Y,z:e.user_Z??0,startTick:e.tick,endTick:end?.tick??endTick});}}
