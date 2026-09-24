@@ -394,6 +394,8 @@ class AppConfig(BaseModel):
     # 修改后由代理管理中心重新生成已存在的代理。
     lite_cut_proxy_resolution: int = 720
     cs2_path: str = ""
+    # Optional HLAE executable used by the Tactical Playbook's alternate POV renderer.
+    hlae_path: str = ""
     demo_directory: str = ""
     # Demo 工作副本缓存根目录；留空则使用 data/demo-cache。入库/上传后复制到此，解析播放录制走缓存。
     demo_cache_directory: str = ""

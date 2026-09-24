@@ -2461,12 +2461,12 @@
     }
 
     function styleKey(panel, active) {
-        const inactiveBackground = panel._insightMouseButton ? "#23262D" : "#2A2D34";
-        panel.style.backgroundColor = active ? "#E07F0A" : inactiveBackground;
-        panel.style.border = active ? "1px solid #F29A32" : "1px solid #3F434D";
-        panel.style.color = active ? "#FFFFFF" : "#8A8F99";
+        const inactiveBackground = panel._insightMouseButton ? "#26303B" : "#343D49";
+        panel.style.backgroundColor = active ? "#E88A00" : inactiveBackground;
+        panel.style.border = active ? "2px solid #FFE09A" : "1px solid #8793A1";
+        panel.style.color = active ? "#FFFFFF" : "#E0E7EF";
         panel.style.boxShadow = active
-            ? "fill #E07F0A8C 0px 0px 7px 0px"
+            ? "fill #FF9D00C0 0px 0px 8px 0px"
             : "none";
     }
 
@@ -2504,32 +2504,45 @@
         pad.style.width = MOUSE_PAD_WIDTH + "px";
         pad.style.height = MOUSE_PAD_HEIGHT + "px";
         pad.style.flowChildren = "none";
-        pad.style.backgroundColor = "#23262D";
-        pad.style.border = "0px solid #00000000";
+        pad.style.backgroundColor = "#141A22";
+        pad.style.border = "2px solid #8693A3";
         pad.style.borderRadius = "0px 0px 24px 24px";
-        pad.style.boxShadow = "none";
+        pad.style.boxShadow = "fill #00000070 0px 1px 6px 0px";
+
+        const title = $.CreatePanel("Label", pad, "CS2InsightMouseMotionTitle");
+        title.text = "MOUSE";
+        title.hittest = false;
+        title.style.position = "4px 2px 0px";
+        title.style.width = "56px";
+        title.style.height = "14px";
+        title.style.fontSize = "9px";
+        title.style.fontWeight = "bold";
+        title.style.fontFamily = "Consolas";
+        title.style.color = "#D8E2EF";
+        title.style.textShadow = "none";
 
         inputMouseTrailSegments = [];
         for (let index = 0; index < MOUSE_TRAIL_POINT_COUNT - 1; index += 1) {
             const segment = $.CreatePanel("Panel", pad, "CS2InsightMouseTrailSegment" + index);
             segment.hittest = false;
             segment.visible = false;
-            segment.style.height = "2px";
+            segment.style.height = "4px";
             segment.style.transformOrigin = "0% 50%";
-            segment.style.backgroundColor = "#E07F0A";
-            segment.style.borderRadius = "1px";
-            segment.style.boxShadow = "none";
+            segment.style.backgroundColor = "#FFC247";
+            segment.style.borderRadius = "2px";
+            segment.style.boxShadow = "fill #FF9D00A0 0px 0px 7px 0px";
             inputMouseTrailSegments.push(segment);
         }
 
         const head = $.CreatePanel("Panel", pad, "CS2InsightMouseHead");
         head.hittest = false;
         head.visible = false;
-        head.style.width = "6px";
-        head.style.height = "6px";
-        head.style.backgroundColor = "#F29A32";
+        head.style.width = "10px";
+        head.style.height = "10px";
+        head.style.backgroundColor = "#FFF4C2";
+        head.style.border = "2px solid #FF9D00";
         head.style.borderRadius = "50%";
-        head.style.boxShadow = "fill #E07F0A80 0px 0px 5px 0px";
+        head.style.boxShadow = "fill #FF9D00D0 0px 0px 8px 0px";
         inputMouseHeadDot = head;
         inputMousePad = pad;
         return pad;
@@ -2702,7 +2715,9 @@
         if (!inputMousePad || !inputMousePad.IsValid()) {
             return;
         }
-        inputMousePad.visible = Boolean(samples && samples.length);
+        // Keep the labeled motion pad visible even when this demo/player has no
+        // mouse-delta samples; only the data-backed trail and pointer disappear.
+        inputMousePad.visible = true;
         const points = smoothMousePath(advanceMousePath(samples || [], xuid, tick));
         inputMouseTrailSegments.forEach(function (segment, index) {
             if (!segment || !segment.IsValid()) {
@@ -2720,9 +2735,9 @@
             const age = (index + 1) / Math.max(1, points.length - 1);
             segment.visible = true;
             segment.style.position = mouseCssPx(start.x) + " "
-                + mouseCssPx(start.y) + " 0px";
+                + mouseCssPx(start.y - 2) + " 0px";
             segment.style.width = mouseCssPx(distance);
-            segment.style.opacity = String((0.06 + age * 0.54).toFixed(3));
+            segment.style.opacity = String((0.32 + age * 0.68).toFixed(3));
             segment.style.transform = "rotateZ("
                 + mouseCssDegrees(Math.atan2(dy, dx) * 180 / Math.PI) + ")";
         });
@@ -2735,8 +2750,8 @@
         }
         const head = points[points.length - 1];
         inputMouseHeadDot.visible = true;
-        inputMouseHeadDot.style.position = mouseCssPx(head.x - 3) + " "
-            + mouseCssPx(head.y - 3) + " 0px";
+        inputMouseHeadDot.style.position = mouseCssPx(head.x - 5) + " "
+            + mouseCssPx(head.y - 5) + " 0px";
     }
 
     function inputHudViewportHeight() {
@@ -2830,7 +2845,7 @@
         inputHud.style.height = "190px";
         inputHud.style.flowChildren = "none";
         inputHud.style.zIndex = "1000";
-        inputHud.style.opacity = "0.92";
+        inputHud.style.opacity = "1.0";
         inputHudAppliedSignature = "";
         applyInputHudPlacement(inputHud);
 

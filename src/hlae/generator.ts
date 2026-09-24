@@ -8,7 +8,7 @@ export class HLAEConfigGenerator {
  if(!/^\d{17}$/.test(spec.steamId))throw new Error('A real Steam64 ID is required.');
  if(!Number.isInteger(startTick)||endTick<=startTick)throw new Error('Invalid recording tick range.');
  const cfg=[
-  '// Source2 only. Reviewed against AdvancedFX 2.192.2 documentation.',
+  '// Source2 only. HLAE 2.192.3 / AfxHookSource2 0.41.3; CS2 1.41.8.2 baseline.',
   'mirv_streams record screen enabled 1',`mirv_streams record fps ${p.fps}`,
   `mirv_streams record name "${consolePath(path.join(spec.directory,'capture'))}"`,
   'mirv_streams settings edit afxDefault settings afxFfmpeg',

@@ -884,6 +884,9 @@ export default function App() {
         put.cs2_path = raw.cs2_path;
         setCs2Path(raw.cs2_path);
       }
+      if (typeof raw.hlae_path === "string") {
+        put.hlae_path = raw.hlae_path;
+      }
       if (typeof raw.ffmpeg_path === "string") {
         put.ffmpeg_path = raw.ffmpeg_path;
         setFfmpegPath(raw.ffmpeg_path);

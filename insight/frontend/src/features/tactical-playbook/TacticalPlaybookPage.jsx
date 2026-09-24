@@ -31,6 +31,7 @@ export default function TacticalPlaybookPage() {
   const rounds = workspace?.rounds || [];
   const [roundNumber, setRoundNumber] = useState(null);
   const [side, setSide] = useState("T");
+  const [recordingMode, setRecordingMode] = useState("obs");
   const [selected, setSelected] = useState("2d");
   const [batch, setBatch] = useState(null);
   const [preparing, setPreparing] = useState(false);
@@ -112,7 +113,7 @@ export default function TacticalPlaybookPage() {
     try {
       const { data } = await API.post("/tactical/prepare-povs", {
         demo_path: demoPath, analysis_workspace: workspace,
-        round_number: actualRound, side,
+        round_number: actualRound, side, recording_mode: recordingMode,
       });
       setBatch(data);
     } catch (reason) {
@@ -333,6 +334,11 @@ export default function TacticalPlaybookPage() {
         <div className="tactical-match-meta">{mapLabel} <span>│</span> R{actualRound} <span>│</span> {side} {zh ? "方战术" : "side"}</div>
       </div>
       <div className="tactical-header-actions">
+        <div className="tactical-recording-mode" role="group" aria-label={zh ? "POV 录制方式" : "POV recording method"}>
+          <button type="button" data-testid="record-mode-obs" aria-pressed={recordingMode === "obs"} disabled={preparing || (batch && !["Complete", "Failed"].includes(batch.status))} className={recordingMode === "obs" ? "is-selected" : ""} onClick={() => setRecordingMode("obs")}>OBS</button>
+          <button type="button" data-testid="record-mode-hlae" aria-pressed={recordingMode === "hlae"} title={zh ? "HLAE 需在设置 → 路径中配置 HLAE.exe、CS2 和 FFmpeg" : "Configure HLAE.exe, CS2 and FFmpeg in Settings → Paths before using HLAE"} disabled={preparing || (batch && !["Complete", "Failed"].includes(batch.status))} className={recordingMode === "hlae" ? "is-selected" : ""} onClick={() => setRecordingMode("hlae")}>HLAE</button>
+        </div>
+        {recordingMode === "hlae" && <span className="tactical-mode-hint">{zh ? "备用引擎" : "Alternate engine"}</span>}
         <Link to="/analysis" className="tactical-action"><ArrowLeft size={15} />{zh ? "返回 Demo" : "Back to Demo"}</Link>
         <button type="button" className="tactical-action tactical-action--primary" onClick={prepare} disabled={preparing || players.length !== 5 || (batch && !["Complete", "Failed"].includes(batch.status))}>{zh ? "生成五个真实 POV" : "Generate 5 real POVs"}</button>
       </div>

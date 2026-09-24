@@ -9,6 +9,7 @@ from contextlib import AsyncExitStack
 from fractions import Fraction
 import subprocess
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
@@ -24,6 +25,7 @@ from ...runtime_session import runtime_session
 from ...obs_bootstrap import bootstrap_obs_environment, ObsBootstrapRequest
 from ...video_composer import MontageComposerError, resolve_ffmpeg_binary, resolve_ffprobe_binary
 from .rounds import TacticalRoundError, build_five_pov_jobs, select_round
+from .hlae_capture import HLAECaptureError, run_hlae_capture, validate_hlae_installation
 from .storage import TacticalStore
 
 router = APIRouter(prefix="/api/tactical", tags=["tactical-playbook"])
@@ -81,6 +83,7 @@ class RoundSelection(BaseModel):
     analysis_workspace: dict
     round_number: int
     side: str
+    recording_mode: Literal["obs", "hlae"] = "obs"
 
 
 def _jobs(selection: RoundSelection) -> list[dict]:
@@ -98,7 +101,7 @@ async def pov_plan(selection: RoundSelection):
     return {"jobs": _jobs(selection)}
 
 
-def _probe_real_video(path: Path, expected_seconds: float) -> dict:
+def _probe_real_video(path: Path, expected_seconds: float, require_audio: bool = True) -> dict:
     if not path.is_file() or path.stat().st_size == 0:
         raise ValueError("recorded video is missing or empty")
     try:
@@ -116,7 +119,8 @@ def _probe_real_video(path: Path, expected_seconds: float) -> dict:
     streams = data.get("streams") or []
     if not any(s.get("codec_type") == "video" for s in streams):
         raise ValueError("recorded POV has no decodable video stream")
-    if not any(s.get("codec_type") == "audio" for s in streams):
+    has_audio = any(s.get("codec_type") == "audio" for s in streams)
+    if require_audio and not has_audio:
         raise ValueError("recorded POV has no audio stream")
     duration = float((data.get("format") or {}).get("duration") or 0)
     if duration <= 0:
@@ -130,7 +134,7 @@ def _probe_real_video(path: Path, expected_seconds: float) -> dict:
         fps = float(Fraction(raw_rate))
     except (ValueError, ZeroDivisionError):
         fps = 0.0
-    return {"duration": duration, "fps": fps, "video_path": str(path)}
+    return {"duration": duration, "fps": fps, "has_audio": has_audio, "height": int(video.get("height") or 0), "video_path": str(path)}
 
 
 def _make_proxy(source: Path, destination: Path) -> None:
@@ -168,6 +172,112 @@ def _normalize_pov(source: Path, destination: Path) -> None:
     )
     if proc.returncode or not destination.is_file():
         raise ValueError(f"ffmpeg could not normalize the POV: {proc.stderr[-500:]}")
+
+
+def _mux_hlae_capture(video: Path, audio: Path, destination: Path, fps: int = 60) -> None:
+    """Mux HLAE's real screen render and its separately captured game WAV."""
+    try:
+        ffmpeg = resolve_ffmpeg_binary(load_config().ffmpeg_path)
+    except MontageComposerError as exc:
+        raise ValueError(f"FFmpeg is required to mux the HLAE POV and game audio: {exc}") from exc
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.stem + ".partial.mp4")
+    proc = subprocess.run(
+        [str(ffmpeg), "-nostdin", "-y", "-i", str(video), "-i", str(audio),
+         "-map", "0:v:0", "-map", "1:a:0", "-vf",
+         f"scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps={fps},setsar=1",
+         "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-g", str(fps * 2),
+         "-keyint_min", str(fps * 2), "-sc_threshold", "0", "-pix_fmt", "yuv420p",
+         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+         "-shortest", "-movflags", "+faststart", str(temporary)],
+        capture_output=True, text=True, timeout=7200,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if proc.returncode or not temporary.is_file() or temporary.stat().st_size == 0:
+        temporary.unlink(missing_ok=True)
+        raise ValueError(f"FFmpeg could not mux the HLAE POV/audio: {proc.stderr[-600:]}")
+    temporary.replace(destination)
+
+
+async def _run_hlae_batch(batch_id: str, jobs: list[dict], tick_rate: float) -> None:
+    state = _batches[batch_id]
+    config = load_config()
+    hlae_ffmpeg = resolve_ffmpeg_binary(config.ffmpeg_path)
+    files = validate_hlae_installation(config.hlae_path, config.cs2_path, str(hlae_ffmpeg))
+    loop = asyncio.get_running_loop()
+    base_dir = get_data_dir() / "tactical-povs" / batch_id
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    for index, job in enumerate(jobs):
+        item = state["players"][index]
+        capture_dir = base_dir / "hlae" / f"player{index + 1}"
+        output = base_dir / f"player{index + 1}.mp4"
+        proxy = base_dir / f"player{index + 1}-proxy.mp4"
+
+        def report(status: str, message: str, player: dict = item) -> None:
+            def apply_update() -> None:
+                if player.get("status") in {"Failed", "Complete"}:
+                    return
+                state["status"] = status
+                player["status"] = status
+                player["message"] = message
+                try:
+                    _persist_batch(state)
+                except OSError:
+                    logger.exception("Could not persist HLAE POV progress for %s", batch_id)
+            loop.call_soon_threadsafe(apply_update)
+
+        try:
+            result = await asyncio.to_thread(
+                run_hlae_capture,
+                files=files,
+                demo_path=job["request"]["demo"]["demo_path"],
+                steam_id64=str(job["steam_id64"]),
+                start_tick=int(job["coverage_start_tick"]),
+                end_tick=int(job["coverage_end_tick"]),
+                tick_rate=tick_rate,
+                output_dir=capture_dir,
+                fps=60,
+                report=report,
+            )
+            item["status"] = "Encoding"
+            item["message"] = "Muxing actual HLAE video with its game WAV"
+            state["status"] = "Encoding"
+            _persist_batch(state)
+            await asyncio.to_thread(_mux_hlae_capture, result["video_path"], result["audio_path"], output)
+            expected = (int(result["end_tick"]) - int(result["start_tick"])) / tick_rate
+            metadata = await asyncio.to_thread(_probe_real_video, output, expected)
+            if abs(float(metadata["duration"]) - expected) > max(1.0, expected * 0.1):
+                raise ValueError(
+                    f"HLAE video duration {metadata['duration']:.2f}s differs from the demo interval {expected:.2f}s."
+                )
+            item["status"] = "Verifying"
+            item["message"] = "Checking decode, audio stream, duration, and proxy"
+            _persist_batch(state)
+            await asyncio.to_thread(_make_proxy, output, proxy)
+            proxy_metadata = await asyncio.to_thread(_probe_real_video, proxy, expected, False)
+            if proxy_metadata["height"] != 360 or abs(float(proxy_metadata["fps"]) - 15) > 0.75:
+                raise ValueError("HLAE preview proxy must be 360p / 15fps.")
+            item.update(
+                status="Complete",
+                duration=metadata["duration"],
+                fps=metadata["fps"],
+                video_path=str(output),
+                proxy_path=str(proxy),
+                start_tick=int(result["start_tick"]),
+                end_tick=int(result["end_tick"]),
+                tick_rate=tick_rate,
+                source="HLAE",
+                stream_url=f"/api/tactical/povs/{batch_id}/{index + 1}/video",
+                proxy_url=f"/api/tactical/povs/{batch_id}/{index + 1}/proxy",
+                render_log_path=str(result["render_log_path"]),
+                error=None,
+            )
+            item.pop("message", None)
+        except Exception as exc:
+            logger.exception("HLAE POV %s failed in batch %s", index + 1, batch_id)
+            item.update(status="Failed", error=str(exc))
+        _persist_batch(state)
 
 
 async def _run_batch(batch_id: str, jobs: list[dict], tick_rate: float) -> None:
@@ -213,6 +323,14 @@ async def _run_batch(batch_id: str, jobs: list[dict], tick_rate: float) -> None:
 
     try:
         await session.enter_async_context(runtime_session("/api/tactical/prepare-povs"))
+        if state.get("recording_mode") == "hlae":
+            state["status"] = "Preparing HLAE"
+            persist_state()
+            await _run_hlae_batch(batch_id, jobs, tick_rate)
+            state["status"] = "Complete" if all(p["status"] == "Complete" for p in state["players"]) else "Failed"
+            if state["status"] == "Failed":
+                state["error"] = "HLAE did not complete all five real POV renders. See each player's render status/log."
+            return
         state["status"] = "Connecting OBS"
         persist_state()
         await _prepare_obs()
@@ -280,10 +398,19 @@ async def prepare_povs(selection: RoundSelection):
     if _active_batch is not None:
         raise HTTPException(409, "another five-POV batch is running")
     jobs = _jobs(selection)
+    if selection.recording_mode == "hlae":
+        config = load_config()
+        try:
+            ffmpeg = resolve_ffmpeg_binary(config.ffmpeg_path)
+            validate_hlae_installation(config.hlae_path, config.cs2_path, str(ffmpeg))
+            resolve_ffprobe_binary(ffmpeg)
+        except (HLAECaptureError, MontageComposerError, OSError) as exc:
+            raise HTTPException(422, {"code": "HLAE_NOT_READY", "message": str(exc)}) from exc
     batch_id = uuid4().hex
     _batches[batch_id] = {
         "id": batch_id, "status": "Waiting", "round_number": selection.round_number,
         "side": selection.side.upper(), "tick_rate": selection.analysis_workspace["tick_rate"],
+        "recording_mode": selection.recording_mode,
         "players": [{
             "player_id": j["player_id"], "player_name": j["player_name"], "steam_id64": j["steam_id64"],
             "coverage_start_tick": j["coverage_start_tick"],

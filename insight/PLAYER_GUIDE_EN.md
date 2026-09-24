@@ -445,13 +445,4 @@ Yes. Add clips from different demos to the queue. The app groups them by demo, s
 
 Have fun—and may your highlights outnumber your fails. 🔥💀
 
----
-
-## Support the Project
-
-If CS2 Insight Agent saves you editing time, you are welcome to buy the developer a coffee. Support helps cover demo parsing, recording compatibility testing, and ongoing maintenance.
-
-<img src="asset/wx.jpg" alt="Support QR code 1" style="zoom:33%;" />
-<img src="asset/ali.jpg" alt="Support QR code 2" style="zoom:33%;" />
-
 > **CS2 Insight Agent** · Made with ❤️ for CS2 Players

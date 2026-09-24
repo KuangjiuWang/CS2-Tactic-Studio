@@ -974,7 +974,7 @@ def test_checked_in_voice_template_contains_only_an_empty_payload():
     assert b"const INPUT_HUD_CONTENT_RIGHT_PX = 331" in script
     assert b"const MOUSE_PAD_WIDTH = 78" in script
     assert b"const MOUSE_PAD_HEIGHT = 70" in script
-    assert b'pad.style.border = "0px solid #00000000"' in script
+    assert b'pad.style.border = "2px solid #8693A3"' in script
     assert b'pad.style.borderRadius = "0px 0px 24px 24px"' in script
     assert b"const encodedMouseTracks = packed[15] || []" in script
     assert b"const encodedHandSwitchTracks = packed[16] || []" in script
@@ -1052,13 +1052,16 @@ def test_checked_in_voice_template_contains_only_an_empty_payload():
     assert b'return normalized.toFixed(3) + "deg"' in script
     assert b"segment.style.position = mouseCssPx(start.x)" in script
     assert b"mouseCssDegrees(Math.atan2(dy, dx) * 180 / Math.PI)" in script
-    assert b"inputMouseHeadDot.style.position = mouseCssPx(head.x - 3)" in script
+    assert b"inputMouseHeadDot.style.position = mouseCssPx(head.x - 5)" in script
     assert b'segment.style.position = start.x + "px "' not in script
     assert b'(Math.atan2(dy, dx) * 180 / Math.PI) + "deg"' not in script
-    assert b'pad.style.backgroundColor = "#23262D"' in script
-    assert b'pad.style.border = "0px solid #00000000"' in script
-    assert b'head.style.boxShadow = "fill #E07F0A80 0px 0px 5px 0px"' in script
-    assert b'segment.style.boxShadow = "none"' in script
+    assert b'pad.style.backgroundColor = "#141A22"' in script
+    assert b'pad.style.border = "2px solid #8693A3"' in script
+    assert b'title.text = "MOUSE"' in script
+    assert b'head.style.boxShadow = "fill #FF9D00D0 0px 0px 8px 0px"' in script
+    assert b'segment.style.height = "4px"' in script
+    assert b'segment.style.opacity = String((0.32 + age * 0.68).toFixed(3))' in script
+    assert b'inputMousePad.visible = true' in script
     assert b"horizontalAxis" not in script
     assert b"verticalAxis" not in script
     assert b"inputMouseCursorX += dx" in script
@@ -1113,15 +1116,15 @@ def test_checked_in_voice_template_contains_only_an_empty_payload():
     assert b'inputHud.style.flowChildren = "none"' in script
     assert b'inputHud.style.overflow = "noclip"' not in script
     assert b'inputHud.style.zIndex = "1000"' in script
-    assert b'inputHud.style.opacity = "0.92"' in script
+    assert b'inputHud.style.opacity = "1.0"' in script
     assert b'key.style.verticalAlign = "center"' not in script
     assert b'key.style.transform = "rotateZ(-2deg)"' not in script
     assert b'key.style.fontStyle = "italic"' not in script
-    assert b'const inactiveBackground = panel._insightMouseButton ? "#23262D" : "#2A2D34"' in script
-    assert b'panel.style.backgroundColor = active ? "#E07F0A" : inactiveBackground' in script
-    assert b'panel.style.border = active ? "1px solid #F29A32" : "1px solid #3F434D"' in script
-    assert b'panel.style.color = active ? "#FFFFFF" : "#8A8F99"' in script
-    assert b'? "fill #E07F0A8C 0px 0px 7px 0px"' in script
+    assert b'const inactiveBackground = panel._insightMouseButton ? "#26303B" : "#343D49"' in script
+    assert b'panel.style.backgroundColor = active ? "#E88A00" : inactiveBackground' in script
+    assert b'panel.style.border = active ? "2px solid #FFE09A" : "1px solid #8793A1"' in script
+    assert b'panel.style.color = active ? "#FFFFFF" : "#E0E7EF"' in script
+    assert b'? "fill #FF9D00C0 0px 0px 8px 0px"' in script
     assert b': "none"' in script
     assert b'function createInputMouseShell(parent)' not in script
     assert b'function createInputMouseDetails(parent)' not in script

@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { HLAEConfigGenerator } from './generator';
+import { hasHlaeHookWarning } from './diagnostics';
 import { HLAEProcessController } from './process';
 import { RenderLog } from './log';
 import { encodeCapture, findFiles } from '../video/encode';
@@ -109,15 +110,16 @@ export class HLAERenderQueue {
    await controller.launch(args);
    let started:number|undefined,ended:number|undefined,takeFolder='',targetSteamId='';
    const deadline=Date.now()+p.jobTimeoutMinutes*60_000;
+   let hookWarningReported=false;
    while(Date.now()<deadline){
     if(signal.aborted)throw new Error('Cancelled');
     const poll=await controller.poll();
     if(poll.gameStarted)update('loading','Loading demo');
     record.appendConsole(poll.log);
     const log=record.console;
-    if(/Could not find address for pattern|Problem in .*AfxHookSource2/i.test(log)){
-     this.cancel();
-     throw new Error('HLAE / CS2 version incompatibility: Source2 hook signature not found. No POV was produced.');
+    if(!hookWarningReported&&(poll.hookWarning||hasHlaeHookWarning(log))){
+     hookWarningReported=true;
+     update('loading','HLAE reported an unresolved engine signature; continuing to verify demo load, exact player lock, and recording markers.');
     }
     const failure=log.match(/TL_ERROR[^\r\n]*|AFXERROR[^\r\n]*|Error loading[^\r\n]*capture\.js[^\r\n]*/i);
     if(failure)throw new Error(failure[0]);

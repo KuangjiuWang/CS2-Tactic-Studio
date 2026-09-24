@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { run } from '../main/process';
+import { hasHlaeHookWarning } from './diagnostics';
 
 export class HLAEProcessController {
  private child?:ChildProcess;
@@ -18,7 +19,7 @@ export class HLAEProcessController {
   this.child.on('error',error=>{this.launchError=error;});
   this.child.on('exit',code=>{this.exitCode=code;});
  }
- async poll():Promise<{gameStarted:boolean;log:string}>{
+ async poll():Promise<{gameStarted:boolean;log:string;hookWarning:boolean}>{
   if(this.launchError)throw this.launchError;
   let gameStarted=false;
   if(!this.gamePid){
@@ -27,7 +28,7 @@ export class HLAEProcessController {
    if(match){this.gamePid=Number(match[1]);gameStarted=true;}
    else if(this.exitCode!==undefined)throw new Error(`HLAE launcher exited before CS2 started (${this.exitCode}).`);
   }
-  let log='';
+  let log='',hookWarning=false;
   try{
    const file=await fs.open(this.consoleLog,'r');
    try{
@@ -40,10 +41,10 @@ export class HLAEProcessController {
   if(this.gamePid&&Date.now()-this.lastGameCheck>2000){
    this.lastGameCheck=Date.now();
    const list=await run('tasklist',['/V','/FI',`PID eq ${this.gamePid}`,'/FO','CSV','/NH']);
-   if(/Error - AfxHookSource2/i.test(list))throw new Error('HLAE / CS2 version incompatibility: AfxHookSource2 displayed an address error before recording.');
+   hookWarning=hasHlaeHookWarning(list);
    if(!/"cs2\.exe"/i.test(list)&&!log.includes('TL_RECORD_END'))throw new Error('CS2 exited before HLAE reported recording end.');
   }
-  return {gameStarted,log};
+  return {gameStarted,log,hookWarning};
  }
  async close(){
   if(this.gamePid){

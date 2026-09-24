@@ -541,13 +541,4 @@ POV HUD 能够让 Demo 的画面看起来更接近实际个人游戏。
 
 祝你在 CS2 战场上大杀四方！🔥💀
 
----
-
-## 支持项目
-
-如果这个项目帮你节省了剪辑时间，欢迎请我喝一杯咖啡 ☕  
-你的支持会用于 Demo 解析、录制兼容性测试和后续功能维护。
-<img src="asset/wx.jpg" alt="赞助方式1" style="zoom:33%;" />
-<img src="asset/ali.jpg" alt="赞助方式2" style="zoom:33%;" />
-
 > **CS2 Insight Agent** v2.2.1 · Made with ❤️ for CS2 Players

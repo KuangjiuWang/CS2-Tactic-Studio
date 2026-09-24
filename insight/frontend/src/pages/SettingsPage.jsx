@@ -8,7 +8,6 @@ import { useLocaleStore } from "../i18n/localeStore.js";
 import { useAppShell } from "../context/AppShellContext";
 import { desktopBridge } from "../desktop/desktopBridge.js";
 import RecordingParamsPage from "./RecordingParamsPage";
-import SponsorModal from "../components/SponsorModal";
 import ObsAiSettingsPanel from "../components/ObsAiSettingsPanel";
 import ObsHostField from "../components/settings/ObsHostField.jsx";
 import GameResourcesSettings from "../components/settings/GameResourcesSettings.jsx";
@@ -48,8 +47,6 @@ import {
   Github,
   Bug,
   Lightbulb,
-  Mail,
-  Heart,
   X,
 } from "lucide-react";
 
@@ -69,20 +66,16 @@ function openExternalLink(url) {
   }
 }
 
-const ISSUE_TEMPLATE_URLS = {
-  zh: {
-    bug: "https://github.com/DrEAmSs59/CS2-insight-agent/issues/new?template=bug_report.yml",
-    feature: "https://github.com/DrEAmSs59/CS2-insight-agent/issues/new?template=feature_request.yml",
-  },
-  en: {
-    bug: "https://github.com/DrEAmSs59/CS2-insight-agent/issues/new?template=bug_report_en.yml",
-    feature: "https://github.com/DrEAmSs59/CS2-insight-agent/issues/new?template=feature_request_en.yml",
-  },
-};
+const GITHUB_REPOSITORY_URL = "https://github.com/KuangjiuWang/CS2-Tactic-Studio";
+const GITHUB_PROFILE_URL = "https://github.com/KuangjiuWang";
 
 function openIssueTemplate(type) {
   const { effectiveLocale } = useLocaleStore.getState();
-  openExternalLink(ISSUE_TEMPLATE_URLS[effectiveLocale]?.[type] ?? ISSUE_TEMPLATE_URLS.zh[type]);
+  const titles = effectiveLocale === "en"
+    ? { bug: "Bug report", feature: "Feature request" }
+    : { bug: "问题反馈", feature: "功能建议" };
+  const title = titles[type] ?? titles.bug;
+  openExternalLink(`${GITHUB_REPOSITORY_URL}/issues/new?title=${encodeURIComponent(title)}`);
 }
 
 /* ---------------------------------------------------------------------------
@@ -192,9 +185,6 @@ export default function SettingsPage() {
   const [calibrating, setCalibrating] = useState(false);
   const [calibrateResult, setCalibrateResult] = useState(null);
   const [restartAlertDismissed, setRestartAlertDismissed] = useState(false);
-
-  // Sponsor Modal
-  const [showSponsorModal, setShowSponsorModal] = useState(false);
 
   // Player Game Config
   const shell = useAppShell();
@@ -484,6 +474,7 @@ export default function SettingsPage() {
       const llm = config.llm ?? {};
 
       payload.cs2_path = config.cs2_path ?? "";
+      payload.hlae_path = config.hlae_path ?? "";
       payload.ffmpeg_path = config.ffmpeg_path ?? "";
       payload.montage_encoder = config.montage_encoder ?? "auto";
       payload.ai_mode = !!config.ai_mode;
@@ -807,7 +798,7 @@ export default function SettingsPage() {
                   </div>
                   <button
                     type="button"
-                    onClick={() => openExternalLink('https://github.com/DrEAmSs59/CS2-insight-agent')}
+                    onClick={() => openExternalLink(GITHUB_REPOSITORY_URL)}
                     className="inline-flex items-center gap-1.5 rounded-md border border-cs2-border bg-cs2-bg-input px-2.5 py-1.5 text-xs font-semibold text-cs2-text-secondary transition-colors hover:border-cs2-accent/50 hover:text-cs2-accent"
                   >
                     <Github className="h-3.5 w-3.5" />
@@ -824,7 +815,7 @@ export default function SettingsPage() {
                 <div className="py-2.5 flex flex-wrap gap-2">
                   <button
                     type="button"
-                    onClick={() => openExternalLink('https://github.com/DrEAmSs59/CS2-insight-agent/issues')}
+                    onClick={() => openExternalLink(`${GITHUB_REPOSITORY_URL}/issues`)}
                     className="inline-flex items-center gap-1.5 rounded-md border border-cs2-border bg-cs2-bg-input px-2.5 py-1.5 text-xs font-semibold text-cs2-text-secondary transition-colors hover:border-cs2-accent/50 hover:text-cs2-accent"
                   >
                     <FolderOpen className="h-3.5 w-3.5" />
@@ -849,21 +840,12 @@ export default function SettingsPage() {
                   <button
                     type="button"
                     onClick={() => {
-                      const subject = t("settings.contactEmailSubject");
-                      openExternalLink(`mailto:dreamss29_@outlook.com?subject=${encodeURIComponent(subject)}`);
+                      openExternalLink(GITHUB_PROFILE_URL);
                     }}
                     className="inline-flex items-center gap-1.5 rounded-md border border-cs2-border bg-cs2-bg-input px-2.5 py-1.5 text-xs font-semibold text-cs2-text-secondary transition-colors hover:border-cs2-accent/50 hover:text-cs2-accent"
                   >
-                    <Mail className="h-3.5 w-3.5" />
+                    <Github className="h-3.5 w-3.5" />
                     {t("settings.btnContact")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowSponsorModal(true)}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-cs2-border bg-cs2-bg-input px-2.5 py-1.5 text-xs font-semibold text-cs2-text-secondary transition-colors hover:border-cs2-accent/50 hover:text-cs2-accent"
-                  >
-                    <Heart className="h-3.5 w-3.5" />
-                    {t("settings.btnSponsor")}
                   </button>
                 </div>
               </SectionCard>
@@ -905,7 +887,7 @@ export default function SettingsPage() {
 
               {/* Paths (CS2 + application and LiteCut data directories) */}
               {activeTab === "paths" && (
-              <SectionCard title={t("settings.sectionPaths")} hint={t("settings.sectionPathsHint")} search={search && !matches(t("settings.sectionPaths") + " " + t("settings.labelCs2Path") + " " + t("settings.labelLiteCutStorage") + " " + t("settings.labelDemoCachePath") + " " + t("settings.labelDataDirectory") + " " + t("settings.labelLogDirectory"))}>
+              <SectionCard title={t("settings.sectionPaths")} hint={t("settings.sectionPathsHint")} search={search && !matches(t("settings.sectionPaths") + " " + t("settings.labelCs2Path") + " " + t("settings.labelHlaePath") + " " + t("settings.labelLiteCutStorage") + " " + t("settings.labelDemoCachePath") + " " + t("settings.labelDataDirectory") + " " + t("settings.labelLogDirectory"))}>
                 <FieldRow label={t("settings.labelCs2Path")} hint={t("settings.hintCs2Path")} search={search && !matches(t("settings.labelCs2Path") + " " + (config.cs2_path ?? ""))}>
                   <PathPicker
                     value={config.cs2_path ?? ""}
@@ -914,6 +896,15 @@ export default function SettingsPage() {
                     exeName="cs2.exe"
                     detectApi="config/detect-cs2"
                     detectField="cs2_path"
+                    t={t}
+                  />
+                </FieldRow>
+                <FieldRow label={t("settings.labelHlaePath")} hint={t("settings.hintHlaePath")} search={search && !matches(t("settings.labelHlaePath") + " " + (config.hlae_path ?? ""))}>
+                  <PathPicker
+                    value={config.hlae_path ?? ""}
+                    onChange={(v) => set("hlae_path", v)}
+                    placeholder="HLAE.exe"
+                    exeName="HLAE.exe"
                     t={t}
                   />
                 </FieldRow>
@@ -1634,8 +1625,6 @@ export default function SettingsPage() {
           </div>
         </div>
       )}
-      {/* Sponsor Modal */}
-      {showSponsorModal && <SponsorModal onClose={() => setShowSponsorModal(false)} />}
     </div>
   );
 }

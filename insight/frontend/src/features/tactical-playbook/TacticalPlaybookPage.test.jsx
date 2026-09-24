@@ -60,6 +60,19 @@ describe("TacticalPlaybookPage", () => {
     await waitFor(() => expect(button.disabled).toBe(false));
   });
 
+  it("defaults to OBS and sends HLAE only when the alternate renderer is selected", async () => {
+    show();
+    expect(screen.getByTestId("record-mode-obs").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("record-mode-hlae").getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(screen.getByTestId("record-mode-hlae"));
+    expect(screen.getByTestId("record-mode-hlae").getAttribute("aria-pressed")).toBe("true");
+    API.post.mockResolvedValueOnce({ data: { id: "hlae-batch", status: "Failed", players: [] } });
+    fireEvent.click(screen.getByRole("button", { name: /生成五个真实 POV|Generate 5 real POVs/ }));
+    await waitFor(() => expect(API.post).toHaveBeenCalled());
+    expect(API.post.mock.calls[0][0]).toBe("/tactical/prepare-povs");
+    expect(API.post.mock.calls[0][1]).toMatchObject({ recording_mode: "hlae" });
+  });
+
   it("switches the actual T roster after halftime and submits that round", async () => {
     show();
     expect(screen.getByText("0 : 0")).toBeTruthy();

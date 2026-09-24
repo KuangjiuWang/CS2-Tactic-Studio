@@ -47,6 +47,7 @@ class ConfigPayload(BaseModel):
     montage_encoder: Optional[str] = None
     montage_export_dir: Optional[str] = None
     cs2_path: Optional[str] = None
+    hlae_path: Optional[str] = None
     demo_directory: Optional[str] = None
     demo_cache_directory: Optional[str] = None
     demo_watch_paths: Optional[list[str]] = None
@@ -349,6 +350,8 @@ async def update_config(payload: ConfigPayload):
                 cfg.llm.base_url = payload.llm.base_url
     if payload.cs2_path is not None:
         cfg.cs2_path = payload.cs2_path
+    if payload.hlae_path is not None:
+        cfg.hlae_path = str(payload.hlae_path).strip()
     if payload.demo_directory is not None:
         cfg.demo_directory = str(payload.demo_directory or "").strip()
     if payload.demo_cache_directory is not None:
