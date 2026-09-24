@@ -37,3 +37,6 @@ required-version = ">=0.11.8,<0.12"
 
 [tool.uv.sources]
 demoparser2 = { url = "https://github.com/DrEAmSs59/CS2-insight-agent/releases/download/demoparser-runtime-v0.41.4-cs2insight10-r1/demoparser2-0.41.4%2Bcs2insight10-cp312-cp312-win_amd64.whl", marker = "sys_platform == 'win32' and platform_machine == 'AMD64'" }
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]

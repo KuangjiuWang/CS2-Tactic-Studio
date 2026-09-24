@@ -23,8 +23,13 @@ plus the configured tail; the UI exposes these coverage boundaries.
 
 Tactic and step records persist in the existing SQLite database. Nested
 folders, tactic moves, editable steps and structured map-anchored drawing are
-available. The product still lacks `.cstactic` exchange, online sharing, full
-user QA on actual recorded five-POV demos, and a built installer on this
-workstation.
-The latter is blocked by the absent MSVC `link.exe`; CS2, OBS and FFmpeg were
-also not found in the expected local tool paths during this development run.
+available. A Windows NSIS installer builds on this workstation with MSVC and
+the embedded Python runtime. The installed CS2, OBS and FFmpeg executables
+are all found by the application's path detectors.
+
+This is not yet a validated five-POV end-to-end product: no real CS2 demo was
+recorded through the complete queue during this development run; an importable
+demo and OBS scene / WebSocket setup are still needed for that acceptance test.
+The product also lacks `.cstactic` exchange and online sharing. The desktop
+startup smoke test and automated tests are separate from an actual CS2 engine
+capture; neither should be reported as proof that five real POVs render here.
