@@ -40,3 +40,4 @@ demoparser2 = { url = "https://github.com/DrEAmSs59/CS2-insight-agent/releases/d
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
+pythonpath = ["backend"]

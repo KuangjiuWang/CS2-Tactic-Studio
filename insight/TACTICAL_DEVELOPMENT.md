@@ -15,11 +15,12 @@ product identifier and data directory.
 
 Current tactical path: parse a demo in Demo Analysis, open Tactical Playbook,
 choose a round and side, then generate five jobs through the original CS2/OBS
-recording queue. Each job is verified with ffprobe for decodable video, positive
-duration and an audio stream. Completed source recordings are copied into a
-per-batch cache and receive 360p/15fps muted proxies. Metadata survives
-backend restart. Dead players only have genuine in-eye coverage through death
-plus the configured tail; the UI exposes these coverage boundaries.
+recording queue. Each job is verified with ffprobe for video, positive duration
+and an audio stream. Finished recordings are normalized to 720p60 H.264/AAC MP4
+in a per-batch cache and receive 360p/15fps muted proxies. A player becomes
+ready as soon as its video is encoded, while later players are still recording.
+Metadata survives backend restart. Dead players only have genuine in-eye
+coverage through death plus the configured tail; the UI exposes these boundaries.
 
 Tactic and step records persist in the existing SQLite database. Nested
 folders, tactic moves, editable steps and structured map-anchored drawing are

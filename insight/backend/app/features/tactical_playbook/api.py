@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 from fractions import Fraction
-import shutil
 import subprocess
 from pathlib import Path
 from uuid import uuid4
@@ -118,55 +117,99 @@ def _make_proxy(source: Path, destination: Path) -> None:
         raise ValueError(f"ffmpeg could not encode the POV proxy: {proc.stderr[-500:]}")
 
 
+def _normalize_pov(source: Path, destination: Path) -> None:
+    """Produce a seekable, WebView-compatible 720p60 source with real sound."""
+    try:
+        ffmpeg = resolve_ffmpeg_binary(load_config().ffmpeg_path)
+    except MontageComposerError as exc:
+        raise ValueError(f"ffmpeg is required for tactical POV normalization: {exc}") from exc
+    proc = subprocess.run(
+        [ffmpeg, "-nostdin", "-y", "-i", str(source), "-map", "0:v:0", "-map", "0:a:0",
+         "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,"
+                "pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=60,setsar=1",
+         "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-g", "120",
+         "-keyint_min", "120", "-sc_threshold", "0", "-pix_fmt", "yuv420p",
+         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+         "-movflags", "+faststart", str(destination)],
+        capture_output=True, text=True, timeout=7200,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if proc.returncode or not destination.is_file():
+        raise ValueError(f"ffmpeg could not normalize the POV: {proc.stderr[-500:]}")
+
+
 async def _run_batch(batch_id: str, jobs: list[dict], tick_rate: float) -> None:
     global _active_batch
     state = _batches[batch_id]
+    finalizers: dict[str, asyncio.Task] = {}
+
+    def persist_state() -> None:
+        path = _batch_state_path(batch_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f"metadata-{uuid4().hex}.tmp")
+        try:
+            temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    async def finalize(index: int, result: dict) -> None:
+        job = jobs[index]
+        item = state["players"][index]
+        if not result.get("success"):
+            item.update(status="Failed", error=str(result.get("error") or "OBS recording failed"))
+            persist_state()
+            return
+        try:
+            item["status"] = "Verifying"
+            source = Path(str(result.get("output_path") or ""))
+            expected = (job["coverage_end_tick"] - job["coverage_start_tick"]) / tick_rate
+            metadata = await asyncio.to_thread(_probe_real_video, source, expected)
+            # Keep the upstream recording; tactics own a normalized MP4.
+            dest = get_data_dir() / "tactical-povs" / batch_id / f"player{index + 1}.mp4"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            item["status"] = "Encoding"
+            await asyncio.to_thread(_normalize_pov, source, dest)
+            metadata = await asyncio.to_thread(_probe_real_video, dest, expected)
+            proxy = dest.with_name(f"player{index + 1}-proxy.mp4")
+            await asyncio.to_thread(_make_proxy, dest, proxy)
+            metadata.update({
+                "video_path": str(dest), "proxy_path": str(proxy),
+                "start_tick": job["coverage_start_tick"],
+                "end_tick": job["coverage_end_tick"], "tick_rate": tick_rate,
+                "stream_url": f"/api/tactical/povs/{batch_id}/{index + 1}/video",
+                "proxy_url": f"/api/tactical/povs/{batch_id}/{index + 1}/proxy",
+            })
+            item.update(status="Complete", **metadata)
+        except (OSError, ValueError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+            item.update(status="Failed", error=str(exc))
+        persist_state()
+
     try:
         state["status"] = "Recording"
         requests = [RecordingRequestDTO.model_validate(j["request"]) for j in jobs]
         by_id = {j["request"]["request_id"]: index for index, j in enumerate(jobs)}
         def on_result(result: dict) -> None:
-            index = by_id.get(result.get("request_id"))
-            if index is not None:
-                state["players"][index]["status"] = "Encoding" if result.get("success") else "Failed"
-                if not result.get("success"):
-                    state["players"][index]["error"] = str(result.get("error") or "OBS recording failed")
+            request_id = result.get("request_id")
+            index = by_id.get(request_id)
+            if index is not None and request_id not in finalizers:
+                state["players"][index]["status"] = "Verifying" if result.get("success") else "Failed"
+                finalizers[request_id] = asyncio.create_task(finalize(index, result))
         observer_token = recording_result_observer.set(on_result)
         try:
             results = await execute_recording_queue(QueueRecordingRequest(requests=requests), None)
         finally:
             recording_result_observer.reset(observer_token)
         by_request = {r.get("request_id"): r for r in results if isinstance(r, dict)}
-        state["status"] = "Verifying"
-        for index, job in enumerate(jobs):
-            item = state["players"][index]
-            result = by_request.get(job["request"]["request_id"]) or {}
-            if not result.get("success"):
-                item.update(status="Failed", error=str(result.get("error") or "OBS recording failed"))
-                continue
-            try:
-                source = Path(str(result.get("output_path") or ""))
-                expected = (job["coverage_end_tick"] - job["coverage_start_tick"]) / tick_rate
-                metadata = await asyncio.to_thread(_probe_real_video, source, expected)
-                # Preserve upstream recorded_clips path; an independent cache copy
-                # gives tactics stable player1..player5 filenames.
-                dest = get_data_dir() / "tactical-povs" / batch_id / f"player{index + 1}{source.suffix.lower()}"
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                await asyncio.to_thread(shutil.copy2, source, dest)
-                proxy = dest.with_name(f"player{index + 1}-proxy.mp4")
-                await asyncio.to_thread(_make_proxy, dest, proxy)
-                metadata["video_path"] = str(dest)
-                metadata["proxy_path"] = str(proxy)
-                metadata["start_tick"] = job["coverage_start_tick"]
-                metadata["end_tick"] = job["coverage_end_tick"]
-                metadata["tick_rate"] = tick_rate
-                metadata["stream_url"] = f"/api/tactical/povs/{batch_id}/{index + 1}/video"
-                metadata["proxy_url"] = f"/api/tactical/povs/{batch_id}/{index + 1}/proxy"
-                item.update(status="Complete", **metadata)
-            except (OSError, ValueError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
-                item.update(status="Failed", error=str(exc))
+        for request_id, index in by_id.items():
+            if request_id not in finalizers:
+                finalizers[request_id] = asyncio.create_task(finalize(index, by_request.get(request_id) or {}))
+        if finalizers:
+            await asyncio.gather(*finalizers.values())
         state["status"] = "Complete" if all(p["status"] == "Complete" for p in state["players"]) else "Failed"
     except Exception as exc:  # surface real CS2/OBS failures, never synthesize videos
+        if finalizers:
+            await asyncio.gather(*finalizers.values(), return_exceptions=True)
         state["status"] = "Failed"
         state["error"] = str(exc)
         for item in state["players"]:
@@ -175,9 +218,7 @@ async def _run_batch(batch_id: str, jobs: list[dict], tick_rate: float) -> None:
     finally:
         _active_batch = None
         try:
-            path = _batch_state_path(batch_id)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+            persist_state()
         except OSError:
             pass
 
