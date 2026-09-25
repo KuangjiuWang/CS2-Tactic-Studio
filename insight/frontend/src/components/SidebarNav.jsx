@@ -29,7 +29,7 @@ const NAV_ITEMS = [
   { to: "/", end: true, labelKey: "nav.guide", icon: BookOpen },
   { to: "/library", labelKey: "nav.demoLibrary", icon: Library },
   { to: "/analysis", labelKey: "nav.analysis", icon: BarChart3 },
-  { to: "/tactics", label: "Tactical Playbook", icon: BookOpen },
+  { to: "/tactics", labelKey: "playbook.library", icon: BookOpen },
   { to: "/queue", labelKey: "nav.recordQueue", icon: Package, queue: true, guarded: true },
 ];
 

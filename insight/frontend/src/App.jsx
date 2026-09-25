@@ -48,6 +48,7 @@ import SidebarNav from "./components/SidebarNav";
 const GuidePage = lazy(() => import("./pages/GuidePage"));
 const DemoLibraryPage = lazy(() => import("./features/demo-library/DemoLibraryPage"));
 const DemoAnalysisPage = lazy(() => import("./features/demo-analysis/DemoAnalysisPage"));
+const TacticalViewer = lazy(() => import("./features/tactical-playbook/TacticalViewer"));
 const TacticalPlaybookPage = lazy(() => import("./features/tactical-playbook/TacticalPlaybookPage"));
 const RecordingQueuePage = lazy(() => import("./pages/RecordingQueuePage"));
 const MontageWorkbenchPage = lazy(() => import("./pages/MontageWorkbenchPage"));
@@ -1474,6 +1475,9 @@ export default function App() {
                 <Route path="/library" element={<DemoLibraryPage />} />
                 <Route path="/analysis" element={<DemoAnalysisPage />} />
                 <Route path="/tactics" element={<TacticalPlaybookPage />} />
+                <Route path="/tactics/folder/:folderId" element={<TacticalPlaybookPage />} />
+                <Route path="/tactics/new" element={<TacticalViewer />} />
+                <Route path="/tactics/:tacticId" element={<TacticalViewer />} />
                 <Route path="/cosmetics-workshop" element={<Navigate to="/tactics" replace />} />
                 <Route path="/demo-analysis-preview" element={<Navigate to="/analysis" replace />} />
                 <Route path="/queue" element={<RecordingQueuePage />} />

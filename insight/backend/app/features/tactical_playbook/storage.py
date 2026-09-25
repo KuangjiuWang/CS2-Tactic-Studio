@@ -59,7 +59,22 @@ class TacticalStore:
                     video_path TEXT, proxy_path TEXT, status TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_tactical_tactics_folder ON tactical_tactics(folder_id);
+                CREATE TABLE IF NOT EXISTS tactical_folder_tactics (
+                    folder_id TEXT NOT NULL REFERENCES tactical_folders(id) ON DELETE CASCADE,
+                    tactic_id TEXT NOT NULL REFERENCES tactical_tactics(id) ON DELETE CASCADE,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(folder_id, tactic_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_folder_tactics_tactic ON tactical_folder_tactics(tactic_id);
+                CREATE TABLE IF NOT EXISTS tactical_migrations (version INTEGER PRIMARY KEY);
             """)
+            # One-time, transactional backfill. Never recreate a removed membership on reopen.
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute("SELECT 1 FROM tactical_migrations WHERE version=1")
+            if await cursor.fetchone() is None:
+                await db.execute("""INSERT OR IGNORE INTO tactical_folder_tactics(folder_id,tactic_id)
+                    SELECT folder_id,id FROM tactical_tactics WHERE folder_id IS NOT NULL""")
+                await db.execute("INSERT INTO tactical_migrations VALUES (1)")
             await db.commit()
 
     async def create_folder(self, name: str, parent_id: str | None = None) -> dict:
@@ -70,6 +85,10 @@ class TacticalStore:
                "created_at": _now(), "updated_at": _now()}
         async with aiosqlite.connect(self.path) as db:
             await db.execute("PRAGMA foreign_keys = ON")
+            if parent_id:
+                cur = await db.execute("SELECT 1 FROM tactical_folders WHERE id=?", (parent_id,))
+                if await cur.fetchone() is None:
+                    raise ValueError("parent folder does not exist")
             await db.execute("INSERT INTO tactical_folders VALUES (:id,:parent_id,:name,:sort_order,:created_at,:updated_at)", row)
             await db.commit()
         return row
@@ -113,6 +132,8 @@ class TacticalStore:
             await db.execute("""INSERT INTO tactical_tactics VALUES
                 (:id,:folder_id,:name,:description,:map_name,:side,:source_demo_path,:source_demo_hash,
                  :round_number,:round_start_tick,:freeze_end_tick,:round_end_tick,:metadata_json,:created_at,:updated_at)""", row)
+            if folder_id:
+                await db.execute("INSERT INTO tactical_folder_tactics(folder_id,tactic_id) VALUES (?,?)", (folder_id, row["id"]))
             await db.commit()
         return {**row, "metadata": metadata or {}}
 
@@ -166,6 +187,9 @@ class TacticalStore:
             cur = await db.execute("UPDATE tactical_tactics SET folder_id=?,updated_at=? WHERE id=?", (folder_id, _now(), tactic_id))
             if cur.rowcount != 1:
                 raise ValueError("tactic does not exist")
+            await db.execute("DELETE FROM tactical_folder_tactics WHERE tactic_id=?", (tactic_id,))
+            if folder_id:
+                await db.execute("INSERT INTO tactical_folder_tactics(folder_id,tactic_id) VALUES (?,?)", (folder_id, tactic_id))
             await db.commit()
 
     async def list_tree(self) -> dict:
@@ -174,9 +198,12 @@ class TacticalStore:
             db.row_factory = aiosqlite.Row
             folders = [dict(row) async for row in await db.execute("SELECT * FROM tactical_folders ORDER BY sort_order,name")]
             tactics = [dict(row) async for row in await db.execute("SELECT * FROM tactical_tactics ORDER BY updated_at DESC")]
+            memberships = [dict(row) async for row in await db.execute("SELECT * FROM tactical_folder_tactics")]
         for tactic in tactics:
             tactic["metadata"] = json.loads(tactic.pop("metadata_json"))
-        return {"folders": folders, "tactics": tactics}
+            tactic["folder_ids"] = [row["folder_id"] for row in memberships if row["tactic_id"] == tactic["id"]]
+            tactic["metadata"].pop("analysis_workspace", None)
+        return {"folders": folders, "tactics": tactics, "memberships": memberships}
 
     async def get_tactic(self, tactic_id: str) -> dict | None:
         await self.initialize()
@@ -188,6 +215,8 @@ class TacticalStore:
                 return None
             tactic = dict(row)
             tactic["metadata"] = json.loads(tactic.pop("metadata_json"))
+            tactic["folder_ids"] = [row[0] async for row in await db.execute(
+                "SELECT folder_id FROM tactical_folder_tactics WHERE tactic_id=?", (tactic_id,))]
             tactic["steps"] = [dict(step) async for step in await db.execute(
                 "SELECT * FROM tactical_steps WHERE tactic_id=? ORDER BY step_number", (tactic_id,))]
             for step in tactic["steps"]:
@@ -195,3 +224,98 @@ class TacticalStore:
             tactic["povs"] = [dict(pov) async for pov in await db.execute(
                 "SELECT * FROM tactical_povs WHERE tactic_id=?", (tactic_id,))]
             return tactic
+
+    async def set_folders(self, tactic_id: str, folder_ids: list[str]) -> None:
+        await self.initialize()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute("SELECT 1 FROM tactical_tactics WHERE id=?", (tactic_id,))
+            if await cursor.fetchone() is None:
+                raise ValueError("tactic does not exist")
+            for folder_id in set(folder_ids):
+                cursor = await db.execute("SELECT 1 FROM tactical_folders WHERE id=?", (folder_id,))
+                if await cursor.fetchone() is None:
+                    raise ValueError("folder does not exist")
+            await db.execute("DELETE FROM tactical_folder_tactics WHERE tactic_id=?", (tactic_id,))
+            await db.executemany("INSERT INTO tactical_folder_tactics(folder_id,tactic_id) VALUES (?,?)",
+                                 [(folder_id, tactic_id) for folder_id in set(folder_ids)])
+            await db.execute("UPDATE tactical_tactics SET folder_id=NULL,updated_at=? WHERE id=?", (_now(), tactic_id))
+            await db.commit()
+
+    async def update_recording(self, tactic_id: str, batch_id: str) -> None:
+        await self.initialize()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute("SELECT metadata_json FROM tactical_tactics WHERE id=?", (tactic_id,))
+            row = await cursor.fetchone()
+            if row is None:
+                raise ValueError("tactic does not exist")
+            metadata = json.loads(row[0])
+            metadata["pov_batch_id"] = batch_id
+            await db.execute("UPDATE tactical_tactics SET metadata_json=?,updated_at=? WHERE id=?",
+                             (json.dumps(metadata, ensure_ascii=False), _now(), tactic_id))
+            await db.commit()
+
+    async def rename(self, kind: str, item_id: str, name: str) -> None:
+        if kind not in {"folders", "tactics"} or not name.strip():
+            raise ValueError("valid kind and non-empty name are required")
+        await self.initialize()
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(f"UPDATE tactical_{kind} SET name=?,updated_at=? WHERE id=?", (name.strip(), _now(), item_id))
+            if cursor.rowcount != 1:
+                raise ValueError("item does not exist")
+            await db.commit()
+
+    async def delete_folder(self, folder_id: str) -> None:
+        await self.initialize()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute("""WITH RECURSIVE tree(id,depth) AS (
+                SELECT id,0 FROM tactical_folders WHERE id=? UNION ALL
+                SELECT f.id,tree.depth+1 FROM tactical_folders f JOIN tree ON f.parent_id=tree.id)
+                SELECT id FROM tree ORDER BY depth DESC""", (folder_id,))
+            ids = [row[0] for row in await cursor.fetchall()]
+            if not ids:
+                raise ValueError("folder does not exist")
+            for item_id in ids:
+                await db.execute("UPDATE tactical_tactics SET folder_id=NULL WHERE folder_id=?", (item_id,))
+                await db.execute("DELETE FROM tactical_folders WHERE id=?", (item_id,))
+            await db.commit()
+
+    async def delete_tactic(self, tactic_id: str) -> None:
+        await self.initialize()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("PRAGMA foreign_keys = ON")
+            cursor = await db.execute("DELETE FROM tactical_tactics WHERE id=?", (tactic_id,))
+            if cursor.rowcount != 1:
+                raise ValueError("tactic does not exist")
+            await db.commit()
+
+    async def import_tactic(self, data: dict) -> dict:
+        # Validate the complete document before creating anything; steps and tactic commit together.
+        name = str(data["name"]).strip()
+        side = data["side"]
+        start, freeze, end = (int(data[k]) for k in ("round_start_tick", "freeze_end_tick", "round_end_tick"))
+        if not name or side not in {"T", "CT"} or not start <= freeze < end:
+            raise ValueError("invalid name, side or round interval")
+        steps = data.get("steps", [])
+        for step in steps:
+            if not start <= int(step["tick"]) <= end or not isinstance(step.get("annotations", []), list):
+                raise ValueError("invalid step")
+        metadata = dict(data.get("metadata", {}))
+        metadata.pop("pov_batch_id", None)  # Machine-local recordings are not portable.
+        row = (uuid4().hex, None, name, str(data.get("description", "")), str(data["map_name"]), side,
+               str(data["source_demo_path"]), None, int(data["round_number"]), start, freeze, end,
+               json.dumps(metadata, ensure_ascii=False), _now(), _now())
+        await self.initialize()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("INSERT INTO tactical_tactics VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+            for number, step in enumerate(steps, 1):
+                await db.execute("INSERT INTO tactical_steps VALUES (?,?,?,?,?,?,?,?,?)",
+                    (uuid4().hex, row[0], number, int(step["tick"]), str(step.get("title", "")), str(step.get("note", "")),
+                     json.dumps(step.get("annotations", []), ensure_ascii=False), _now(), _now()))
+            await db.commit()
+        return await self.get_tactic(row[0])

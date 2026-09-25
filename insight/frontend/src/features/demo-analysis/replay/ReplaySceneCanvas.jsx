@@ -51,6 +51,7 @@ function grenadeVisual(kind) {
   if (/烟|smoke/i.test(value)) return { stem: "smokegrenade", short: "烟", className: "border-sky-200 bg-sky-500/85 text-white" };
   if (/闪|flash/i.test(value)) return { stem: "flashbang", short: "闪", className: "border-yellow-100 bg-yellow-300/90 text-yellow-950" };
   if (/燃|火|molotov|inferno|incendiary/i.test(value)) return { stem: /incendiary|incgrenade/i.test(value) ? "incgrenade" : "molotov", short: "火", className: "border-orange-100 bg-orange-500/90 text-white" };
+  if (/decoy|诱饵/i.test(value)) return { stem: "decoy", short: "D", className: "border-teal-200 bg-teal-600 text-white" };
   return { stem: "hegrenade", short: /HE/i.test(value) ? "雷" : "投", className: "border-rose-100 bg-rose-500/90 text-white" };
 }
 

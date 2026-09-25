@@ -1,3 +1,4 @@
+import playbook from "./locales/en/playbook.js";
 import { mergeCatalogs } from "../catalog.js";
 import common from "./locales/en/common.js";
 import api from "./locales/en/api.js";
@@ -15,6 +16,7 @@ import cosmeticsWorkshop from "./locales/en/cosmeticsWorkshop.js";
 import radar from "./locales/en/radar.js";
 
 export default mergeCatalogs("en", {
+  playbook,
   common,
   api,
   guide,

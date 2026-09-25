@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { AppShellProvider } from "../../context/AppShellContext";
-import TacticalPlaybookPage from "./TacticalPlaybookPage";
+import TacticalPlaybookPage from "./TacticalViewer";
 import API from "../../api/api";
 
 vi.mock("../../api/api", () => ({

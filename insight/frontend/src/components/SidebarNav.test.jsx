@@ -31,7 +31,7 @@ describe("SidebarNav", () => {
     expect(screen.getByRole("link", { name: /Demo 库|Demo Library/ })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Demo 分析|Analysis/ })).toBeTruthy();
     expect(screen.queryByRole("link", { name: /饰品工坊|Cosmetics Workshop/ })).toBeNull();
-    expect(screen.getByRole("link", { name: /Tactical Playbook/ }).getAttribute("href")).toBe("/tactics");
+    expect(screen.getByRole("link", { name: /战术库|Tactical Library/ }).getAttribute("href")).toBe("/tactics");
     expect(screen.getByRole("link", { name: /录制队列|Record Queue/ }).textContent).toContain("3");
 
     fireEvent.click(screen.getByRole("button", { name: /收起侧栏|Collapse sidebar/ }));

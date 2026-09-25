@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+import sqlite3
 
 from app.features.tactical_playbook.storage import TacticalStore
 
@@ -55,3 +56,57 @@ async def _tactic_can_move_between_folders(tmp_path):
     )
     await store.move_tactic(tactic["id"], folder["id"])
     assert (await TacticalStore(store.path).get_tactic(tactic["id"]))["folder_id"] == folder["id"]
+
+
+def test_collections_migration_removal_and_recursive_delete(tmp_path):
+    async def scenario():
+        store = TacticalStore(tmp_path / "legacy.db")
+        parent = await store.create_folder("Training")
+        child = await store.create_folder("Mirage", parent["id"])
+        other = await store.create_folder("Anti-Strat")
+        tactic = await store.create_tactic(name="Spirit A Split", map_name="de_mirage", side="T", demo_path="match.dem",
+            round_number=17, round_start_tick=100, freeze_end_tick=200, round_end_tick=900, folder_id=child["id"])
+        # Reconstruct pre-migration schema/data, preserving the legacy folder_id.
+        with sqlite3.connect(store.path) as db:
+            db.execute("DROP TABLE tactical_folder_tactics")
+            db.execute("DROP TABLE tactical_migrations")
+        reopened = TacticalStore(store.path)
+        assert (await reopened.get_tactic(tactic["id"]))["folder_ids"] == [child["id"]]
+        await reopened.set_folders(tactic["id"], [child["id"], other["id"], child["id"]])
+        assert len((await reopened.list_tree())["tactics"]) == 1
+        assert len((await reopened.get_tactic(tactic["id"]))["folder_ids"]) == 2
+        with pytest.raises(ValueError, match="folder does not exist"):
+            await reopened.set_folders(tactic["id"], ["missing"])
+        assert len((await reopened.get_tactic(tactic["id"]))["folder_ids"]) == 2
+        await reopened.set_folders(tactic["id"], [other["id"]])
+        assert (await TacticalStore(store.path).get_tactic(tactic["id"]))["folder_ids"] == [other["id"]]
+        await reopened.set_folders(tactic["id"], [child["id"], other["id"]])
+        await reopened.delete_folder(parent["id"])
+        tree = await TacticalStore(store.path).list_tree()
+        assert len(tree["tactics"]) == 1
+        assert [f["id"] for f in tree["folders"]] == [other["id"]]
+        assert tree["tactics"][0]["folder_ids"] == [other["id"]]
+        await reopened.rename("tactics", tactic["id"], "Updated")
+        assert (await reopened.get_tactic(tactic["id"]))["name"] == "Updated"
+        await reopened.delete_tactic(tactic["id"])
+        assert (await reopened.list_tree())["memberships"] == []
+    asyncio.run(scenario())
+
+
+def test_portable_import_validates_before_writing_and_preserves_steps(tmp_path):
+    async def scenario():
+        store = TacticalStore(tmp_path / "import.db")
+        data = dict(name="A", map_name="de_mirage", side="T", source_demo_path="match.dem",
+                    round_number=1, round_start_tick=100, freeze_end_tick=200, round_end_tick=900,
+                    metadata={"pov_batch_id": "local-only"}, steps=[dict(tick=1000)])
+        with pytest.raises(ValueError):
+            await store.import_tactic(data)
+        assert (await store.list_tree())["tactics"] == []
+        data["steps"] = [dict(tick=300, title="Execute", annotations=[{"type": "arrow"}])]
+        tactic = await store.import_tactic(data)
+        assert tactic["steps"][0]["title"] == "Execute"
+        assert tactic["metadata"].get("pov_batch_id") is None
+        copy = await store.import_tactic(tactic)
+        assert copy["id"] != tactic["id"]
+        assert copy["steps"][0]["id"] != tactic["steps"][0]["id"]
+    asyncio.run(scenario())

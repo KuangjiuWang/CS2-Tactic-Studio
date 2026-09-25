@@ -409,6 +409,7 @@ async def prepare_povs(selection: RoundSelection):
     batch_id = uuid4().hex
     _batches[batch_id] = {
         "id": batch_id, "status": "Waiting", "round_number": selection.round_number,
+        "demo_path": selection.demo_path,
         "side": selection.side.upper(), "tick_rate": selection.analysis_workspace["tick_rate"],
         "recording_mode": selection.recording_mode,
         "players": [{
@@ -483,7 +484,20 @@ class EditStep(BaseModel):
 
 @router.get("/playbooks")
 async def list_playbooks():
-    return await TacticalStore().list_tree()
+    tree = await TacticalStore().list_tree()
+    for tactic in tree["tactics"]:
+        batch_id = tactic["metadata"].get("pov_batch_id")
+        try:
+            batch = _get_batch(batch_id) if batch_id else None
+        except (HTTPException, ValueError, OSError):
+            batch = None
+        players = (batch or {}).get("players", [])
+        count = sum(p.get("status") == "Complete" for p in players)
+        status = (batch or {}).get("status")
+        tactic["pov_count"] = count
+        tactic["pov_status"] = ("ready" if count == 5 else "generating" if batch and status not in {"Complete", "Failed"}
+                                else "partial" if count else "failed" if status == "Failed" else "none")
+    return tree
 
 
 @router.post("/folders")
@@ -517,7 +531,10 @@ async def save_tactic(body: SaveTactic):
             freeze_end_tick=int(row["freeze_end_tick"]),
             round_end_tick=int(row["round_end_tick"]),
             folder_id=body.folder_id,
-            metadata={"team_key": team_key, "pov_batch_id": body.pov_batch_id},
+            metadata={"team_key": team_key, "pov_batch_id": body.pov_batch_id,
+                      "analysis_workspace": body.selection.analysis_workspace,
+                      "source_match": " vs ".join(str(body.selection.analysis_workspace.get(k) or "") for k in ("team_a_name", "team_b_name")),
+                      "source_team": body.selection.analysis_workspace.get(f"team_{team_key}_name", "")},
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -567,3 +584,77 @@ async def move_tactic(tactic_id: str, body: MoveTactic):
         return {"ok": True}
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+class FolderMemberships(BaseModel):
+    folder_ids: list[str]
+
+
+class RenameItem(BaseModel):
+    name: str
+
+
+class RecordingLink(BaseModel):
+    batch_id: str
+
+
+@router.put("/tactics/{tactic_id}/recording")
+async def link_recording(tactic_id: str, body: RecordingLink):
+    batch = _get_batch(body.batch_id)
+    tactic = await TacticalStore().get_tactic(tactic_id)
+    if not tactic or not batch:
+        raise HTTPException(404, "tactic or recording not found")
+    if (batch.get("demo_path") != tactic["source_demo_path"] or
+            batch.get("round_number") != tactic["round_number"] or batch.get("side") != tactic["side"]):
+        raise HTTPException(422, "recording does not match the tactic")
+    await TacticalStore().update_recording(tactic_id, body.batch_id)
+    return {"ok": True}
+
+
+@router.put("/tactics/{tactic_id}/folders")
+async def set_tactic_folders(tactic_id: str, body: FolderMemberships):
+    try:
+        await TacticalStore().set_folders(tactic_id, body.folder_ids)
+        return {"ok": True}
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.patch("/{kind}/{item_id}/name")
+async def rename_item(kind: str, item_id: str, body: RenameItem):
+    try:
+        await TacticalStore().rename(kind, item_id, body.name)
+        return {"ok": True}
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.delete("/folders/{folder_id}")
+async def delete_folder(folder_id: str):
+    try:
+        await TacticalStore().delete_folder(folder_id)
+        return {"ok": True}
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.delete("/tactics/{tactic_id}")
+async def delete_tactic(tactic_id: str):
+    try:
+        await TacticalStore().delete_tactic(tactic_id)
+        return {"ok": True}
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+class ImportTactic(BaseModel):
+    format: Literal["cs2-tactic-v1"]
+    tactic: dict
+
+
+@router.post("/import")
+async def import_tactic(body: ImportTactic):
+    try:
+        return await TacticalStore().import_tactic(body.tactic)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(422, "Invalid tactic file: " + str(exc)) from exc

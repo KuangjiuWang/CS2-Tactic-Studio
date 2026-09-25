@@ -207,6 +207,7 @@ export default function DemoAnalysisPage() {
             <div className="min-w-0"><h1 className="text-[14px] font-black tracking-wide">{t("analysis.workspace.title")}</h1><p className="truncate font-mono text-[9px] text-cs2-text-muted">{s.currentFilename} · {s.currentMatchIndex + 1}/{matches.length}</p></div>
           </div>
           <div className="flex items-center gap-2">
+            <Link to="/tactics/new" className="rounded-md border border-cs2-border px-3 py-2 text-[11px] font-semibold text-cs2-accent">{t("playbook.fromDemo")}</Link>
             <Button variant="secondary" size="sm" disabled={!currentUpload?.id && !currentUpload?.path} onClick={playCurrentDemo}>
               <Play className="h-3.5 w-3.5 fill-current" />
               {t("analysis.workspace.playDemo")}
