@@ -11,7 +11,7 @@ vi.mock("../../api/api", () => ({
 }));
 
 vi.mock("../demo-analysis/replay/Demo2DReplayPreview", () => ({
-  default: ({ externalSeekTick }) => <div data-testid="radar-seek">{externalSeekTick ?? "none"}</div>,
+  default: ({ externalSeekTick, externalPlaying }) => <div data-testid="radar-seek" data-playing={String(externalPlaying)}>{externalSeekTick ?? "none"}</div>,
 }));
 
 const players = [
@@ -60,6 +60,21 @@ describe("TacticalPlaybookPage", () => {
     await waitFor(() => expect(button.disabled).toBe(false));
   });
 
+  it("automatically saves a completed five-POV batch as map and side", async () => {
+    const completedBatch = {
+      id: "completed-batch", status: "Complete",
+      players: players.slice(0, 5).map((player) => ({ steam_id64: player.steam_id64, status: "Complete" })),
+    };
+    API.post.mockResolvedValueOnce({ data: completedBatch }).mockResolvedValueOnce({
+      data: { id: "saved-tactic", name: "Mirage T", metadata: { pov_batch_id: completedBatch.id } },
+    });
+    show();
+    fireEvent.click(screen.getByRole("button", { name: /生成五个真实 POV|Generate 5 real POVs/ }));
+    await waitFor(() => expect(API.post).toHaveBeenCalledTimes(2));
+    expect(API.post.mock.calls[1][0]).toBe("/tactical/tactics");
+    expect(API.post.mock.calls[1][1]).toMatchObject({ name: "Mirage T", pov_batch_id: completedBatch.id });
+  });
+
   it("defaults to OBS and sends HLAE only when the alternate renderer is selected", async () => {
     show();
     expect(screen.getByTestId("record-mode-obs").getAttribute("aria-pressed")).toBe("true");
@@ -94,7 +109,7 @@ describe("TacticalPlaybookPage", () => {
         coverage_start_tick: 100 + index * 10, coverage_end_tick: 1000,
         status: "Complete", proxy_url: `/proxy${index}`, stream_url: `/video${index}`,
       })),
-    } });
+    } }).mockResolvedValueOnce({ data: { id: "saved", name: "Mirage T", metadata: { pov_batch_id: "batch" } } });
     fireEvent.click(screen.getByRole("button", { name: /生成五个真实 POV|Generate 5 real POVs/ }));
     await waitFor(() => expect(screen.getByTestId("pov-1").textContent).toContain("Complete"));
     fireEvent.click(screen.getByTestId("pov-1"));
@@ -102,6 +117,9 @@ describe("TacticalPlaybookPage", () => {
     Object.defineProperty(video, "currentTime", { configurable: true, value: 5, writable: true });
     fireEvent.timeUpdate(video);
     expect(screen.getByText(/Tick 420/)).toBeTruthy();
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    fireEvent.play(video);
+    expect(screen.getByTestId("radar-seek").getAttribute("data-playing")).toBe("true");
     fireEvent.click(screen.getByTestId("pov-2"));
     const secondVideo = document.querySelector("main video");
     fireEvent.loadedMetadata(secondVideo);
@@ -110,5 +128,6 @@ describe("TacticalPlaybookPage", () => {
     fireEvent.click(screen.getByTestId("pov-2d"));
     expect(screen.getByText(/Tick 420/)).toBeTruthy();
     expect(screen.getByTestId("radar-seek").textContent).toBe("420");
+    playSpy.mockRestore();
   });
 });

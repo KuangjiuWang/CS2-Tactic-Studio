@@ -25,6 +25,7 @@ function Viewer({ initialTactic = null }) {
   const [batch, setBatch] = useState(null);
   const [preparing, setPreparing] = useState(false);
   const prepareLock = useRef(false);
+  const autoSaveBatchRef = useRef(null);
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -48,7 +49,7 @@ function Viewer({ initialTactic = null }) {
   const activeRound = useMemo(() => rounds.find((row) => Number(row.round_number) === Number(roundNumber)) || rounds[0], [rounds, roundNumber]);
   const actualRound = Number(activeRound?.round_number || 0);
   const teamKey = activeRound?.team_a_side === side ? "a" : activeRound?.team_b_side === side ? "b" : null;
-  const players = (workspace?.players || []).filter((player) => player.team_key === teamKey);
+  const players = useMemo(() => (workspace?.players || []).filter((player) => player.team_key === teamKey), [workspace?.players, teamKey]);
   const tickRate = Number(workspace?.tick_rate || 64);
   const startTick = Number(activeRound?.freeze_end_tick || activeRound?.start_tick || 0);
   const endTick = Math.max(startTick + 1, Number(activeRound?.record_end_tick || activeRound?.round_end_tick || activeRound?.end_tick || startTick + tickRate * 115));
@@ -57,6 +58,7 @@ function Viewer({ initialTactic = null }) {
     .sort((left, right) => Number(left.tick) - Number(right.tick)), [activeRound, startTick, endTick]);
   const visibleEvents = useMemo(() => roundEvents.filter((event) => ["kill", "grenade", "plant", "defuse", "explode", "bomb_pickup", "bomb_drop"].includes(event.type)), [roundEvents]);
   const mapLabel = String(workspace?.map_name || "").replace(/^de_/, "").replace(/^./, (letter) => letter.toUpperCase());
+  const defaultTacticName = `${mapLabel || workspace?.map_name || "CS2"} ${side}`;
 
   useEffect(() => {
     const initialTick = Number(activeRound?.freeze_end_tick || activeRound?.start_tick || 0);
@@ -129,6 +131,33 @@ function Viewer({ initialTactic = null }) {
       setError(String(reason?.response?.data?.detail || reason.message));
     }
   };
+
+  useEffect(() => {
+    if (batch?.status !== "Complete" || batch.players?.length !== 5 || batch.players.some((player) => player.status !== "Complete")) return;
+    if (batch.id === savedTactic?.metadata?.pov_batch_id || autoSaveBatchRef.current === batch.id) return;
+    autoSaveBatchRef.current = batch.id;
+    setError("");
+    void (async () => {
+      try {
+        let data;
+        if (savedTactic) {
+          await API.put(`/tactical/tactics/${savedTactic.id}/recording`, { batch_id: batch.id });
+          ({ data } = await API.get(`/tactical/tactics/${savedTactic.id}`));
+        } else {
+          ({ data } = await API.post("/tactical/tactics", {
+            name: tacticName.trim() || defaultTacticName,
+            pov_batch_id: batch.id,
+            selection: { demo_path: demoPath, analysis_workspace: workspace, round_number: actualRound, side },
+          }));
+        }
+        setSavedTactic(data);
+        setTacticName(data.name);
+      } catch (reason) {
+        autoSaveBatchRef.current = null;
+        setError(String(reason?.response?.data?.detail || reason.message));
+      }
+    })();
+  }, [actualRound, batch, defaultTacticName, demoPath, savedTactic, side, tacticName, workspace]);
 
   const captureStep = async () => {
     if (!savedTactic) return;
@@ -278,13 +307,13 @@ function Viewer({ initialTactic = null }) {
     {error && <div role="alert" className="tactical-error">{error}</div>}
     {batch?.status === "Failed" && <div role="alert" className="tactical-error">{batch.error || batch.players?.filter((item) => item.status === "Failed").map((item) => `${item.player_name}: ${item.error}`).join("；") || (t("playbook.viewer6"))}</div>}
     <div className="tactical-body">
-      <POVSelector players={players} batch={batch} selected={selected} selectView={selectView} tick={tick} tickRate={tickRate} />
+      <POVSelector players={players} batch={batch} selected={selected} selectView={selectView} tick={tick} tickRate={tickRate} playing={playing} speed={speed} />
       <main className={`tactical-stage ${selected === "2d" ? "is-2d" : ""}`} ref={stageRef}>
         <div className="tactical-video-pane">
           {selected !== "2d" && (videoUrl ? <video key={videoUrl} ref={videoRef} src={videoUrl} playsInline className="tactical-main-video" onTimeUpdate={(event) => { const nextTick = povSecondsToTick(event.currentTarget.currentTime, selectedPov.coverage_start_tick, tickRate); setTick(nextTick); setReplaySeek(nextTick); }} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onRateChange={(event) => setSpeed(event.currentTarget.playbackRate)} onVolumeChange={(event) => setVolume(event.currentTarget.volume)} /> : <div className="tactical-video-empty"><span>{selectedPov?.status === "Failed" ? selectedPov.error : t("playbook.viewer8")}</span><small>{batch?.status || "Waiting"}</small></div>)}
           {selected !== "2d" && <div className="tactical-video-overlay"><span>{selectedPlayer?.name}</span></div>}
         </div>
-        <section className="tactical-radar-pane"><div className="tactical-panel-heading"><strong>{t("playbook.viewer9")}</strong><button onClick={() => selectView(selected === "2d" ? "0" : "2d")} title={t("playbook.expandMap")}><Maximize2 size={14} /></button></div><div className="tactical-radar-canvas"><Demo2DReplayPreview key={`${demoPath}:${actualRound}`} compact workspace={workspace} demoPath={demoPath} players={workspace.players} teamAName={workspace.team_a_name} teamBName={workspace.team_b_name} initialRound={actualRound} externalSeekTick={replaySeek} externalPlaying={selected === "2d" ? playing : false} externalSpeed={speed} onPlayhead={onReplayTick} onPlaybackChange={onReplayPlaying} annotations={selectedStep?.annotations || []} annotationMode={selectedStep ? annotationMode : "select"} annotationColor={annotationColor} onAnnotationCommit={(item) => void commitAnnotation(item)} onAnnotationDelete={(id) => void removeAnnotation(id)} /></div><div className="tactical-map-legend"><span className="tactical-legend-t">● T</span><span className="tactical-legend-ct">● CT</span><span>☁ {t("playbook.viewer10")}</span><span>✦ {t("playbook.viewer11")}</span></div></section>
+        <section className="tactical-radar-pane"><div className="tactical-panel-heading"><strong>{t("playbook.viewer9")}</strong><button onClick={() => selectView(selected === "2d" ? "0" : "2d")} title={t("playbook.expandMap")}><Maximize2 size={14} /></button></div><div className="tactical-radar-canvas"><Demo2DReplayPreview key={`${demoPath}:${actualRound}`} compact workspace={workspace} demoPath={demoPath} players={workspace.players} teamAName={workspace.team_a_name} teamBName={workspace.team_b_name} initialRound={actualRound} externalSeekTick={replaySeek} externalPlaying={playing} externalSpeed={speed} onPlayhead={onReplayTick} onPlaybackChange={onReplayPlaying} annotations={selectedStep?.annotations || []} annotationMode={selectedStep ? annotationMode : "select"} annotationColor={annotationColor} onAnnotationCommit={(item) => void commitAnnotation(item)} onAnnotationDelete={(id) => void removeAnnotation(id)} /></div><div className="tactical-map-legend"><span className="tactical-legend-t">● T</span><span className="tactical-legend-ct">● CT</span><span>☁ {t("playbook.viewer10")}</span><span>✦ {t("playbook.viewer11")}</span></div></section>
         <UtilityFeed visibleEvents={visibleEvents} tick={tick} tickRate={tickRate} startTick={startTick} seekToTick={seekToTick} />
       </main>
     </div>
