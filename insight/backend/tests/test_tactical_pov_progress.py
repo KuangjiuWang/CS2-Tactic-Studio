@@ -121,3 +121,110 @@ def test_tactical_name_fallback_requires_positive_steamid_verification(monkeypat
         finally:
             require_verified_pov.reset(token)
     asyncio.run(run())
+
+
+def test_retry_endpoint_schedules_only_incomplete_players(tmp_path, monkeypatch):
+    async def run():
+        batch_id = "d" * 32
+        demo_path = str(tmp_path / "match.dem")
+        monkeypatch.setattr(api, "get_data_dir", lambda: tmp_path)
+        monkeypatch.setattr(api, "_active_batch", None)
+        state = {
+            "id": batch_id, "status": "Failed", "demo_path": demo_path,
+            "round_number": 7, "side": "T", "tick_rate": 64,
+            "recording_mode": "obs", "players": [
+                {
+                    "steam_id64": f"steam-{index}", "status": status, "attempt": 1,
+                    "coverage_start_tick": 100, "coverage_end_tick": 200,
+                }
+                for index, status in enumerate(("Complete", "Failed", "Complete", "Failed", "Complete"))
+            ],
+        }
+        api._batches[batch_id] = state
+        rebuilt_jobs = [
+            {
+                "steam_id64": f"steam-{index}", "request": {"request_id": f"retry-{index}"},
+                "coverage_start_tick": 100, "coverage_end_tick": 200,
+            }
+            for index in range(5)
+        ]
+        monkeypatch.setattr(api, "_jobs", lambda _selection: rebuilt_jobs)
+        scheduled = asyncio.Event()
+        captured = {}
+
+        async def capture_retry(actual_batch_id, jobs, tick_rate, player_indices):
+            captured.update(batch_id=actual_batch_id, jobs=jobs, tick_rate=tick_rate, player_indices=player_indices)
+            api._active_batch = None
+            scheduled.set()
+
+        monkeypatch.setattr(api, "_run_batch", capture_retry)
+        selection = api.RoundSelection(
+            demo_path=demo_path,
+            analysis_workspace={"tick_rate": 64},
+            round_number=7,
+            side="T",
+        )
+        try:
+            response = await api.retry_failed_povs(batch_id, selection)
+            assert response["status"] == "Waiting"
+            assert [player["status"] for player in state["players"]] == [
+                "Complete", "Waiting", "Complete", "Waiting", "Complete",
+            ]
+            assert [player["attempt"] for player in state["players"]] == [1, 2, 1, 2, 1]
+            await asyncio.wait_for(scheduled.wait(), 2)
+            assert captured["batch_id"] == batch_id
+            assert captured["player_indices"] == [1, 3]
+            assert [job["steam_id64"] for job in captured["jobs"]] == ["steam-1", "steam-3"]
+            assert captured["tick_rate"] == 64
+        finally:
+            api._active_batch = None
+            api._batches.pop(batch_id, None)
+    asyncio.run(run())
+
+
+def test_retry_batch_maps_subset_job_to_original_player_slot(tmp_path, monkeypatch):
+    async def run():
+        batch_id = "e" * 32
+        source = tmp_path / "capture.mp4"
+        source.write_bytes(b"recorded-by-OBS")
+        monkeypatch.setattr(api, "get_data_dir", lambda: tmp_path)
+        monkeypatch.setattr(api, "_active_batch", batch_id)
+        monkeypatch.setattr(api, "_prepare_obs", lambda: asyncio.sleep(0))
+        monkeypatch.setattr(api.RecordingRequestDTO, "model_validate", lambda payload: payload)
+        monkeypatch.setattr(api, "QueueRecordingRequest", lambda **kwargs: kwargs)
+        monkeypatch.setattr(api, "_probe_real_video", lambda _source, _expected: {"duration": 10.0, "fps": 60.0})
+        monkeypatch.setattr(api, "_normalize_pov", lambda _source, dest: dest.write_bytes(b"normalized"))
+        monkeypatch.setattr(api, "_make_proxy", lambda _source, dest: dest.write_bytes(b"proxy"))
+        job = {
+            "request": {"request_id": "retry-player-two"},
+            "coverage_start_tick": 100,
+            "coverage_end_tick": 740,
+        }
+
+        async def retry_queue(request, _unused):
+            assert len(request["requests"]) == 1
+            result = {"request_id": "retry-player-two", "success": True, "output_path": str(source)}
+            api.recording_result_observer.get()(result)
+            return [result]
+
+        monkeypatch.setattr(api, "execute_recording_queue", retry_queue)
+        state = {
+            "id": batch_id, "status": "Waiting", "recording_mode": "obs",
+            "players": [{"status": "Complete", "video_path": f"saved-{index}.mp4"} for index in range(5)],
+        }
+        state["players"][1] = {"status": "Waiting", "steam_id64": "steam-1"}
+        api._batches[batch_id] = state
+        try:
+            await api._run_batch(batch_id, [job], 64.0, [1])
+            retried = state["players"][1]
+            assert state["status"] == "Complete"
+            assert retried["status"] == "Complete"
+            assert retried["video_path"].endswith("player2.mp4")
+            assert retried["proxy_path"].endswith("player2-proxy.mp4")
+            assert retried["stream_url"].endswith("/2/video")
+            assert state["players"][0]["video_path"] == "saved-0.mp4"
+            assert (tmp_path / "tactical-povs" / batch_id / "player2-proxy.mp4").is_file()
+        finally:
+            api._active_batch = None
+            api._batches.pop(batch_id, None)
+    asyncio.run(run())

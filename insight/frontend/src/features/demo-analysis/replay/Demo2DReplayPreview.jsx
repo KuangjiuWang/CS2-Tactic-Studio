@@ -22,6 +22,7 @@ import { resolveHudWeaponStem } from "../workspaces/timeline/killfeed/resolveHud
 import ReplaySceneCanvas, { computeBombState } from "./ReplaySceneCanvas";
 import { isSmokeDebugEnabled } from "./smokeDebugGate";
 import { resolveReplayTransform } from "./replayRadarTransform";
+import { shouldSyncExternalPlayhead } from "./externalPlayheadSync";
 import {
   clamp,
   createPlayheadStore,
@@ -591,6 +592,7 @@ export default function Demo2DReplayPreview({
   layoutEditing = false,
   layoutResetSignal = 0,
   externalSeekTick = null,
+  externalPlayheadTick = null,
   externalPlaying = null,
   externalSpeed = null,
   compact = false,
@@ -1124,6 +1126,14 @@ export default function Demo2DReplayPreview({
     const index = frames.findIndex((frame) => Number(frame.tick) >= Number(externalSeekTick));
     seekToFrameIndex(index < 0 ? frames.length - 1 : index);
   }, [externalSeekTick, frames]);
+
+  useEffect(() => {
+    if (externalPlayheadTick == null || !frames.length) return;
+    const currentTick = playheadStoreRef.current?.getSnapshot()?.tick;
+    if (!shouldSyncExternalPlayhead(currentTick, externalPlayheadTick, tickRate)) return;
+    const index = frames.findIndex((frame) => Number(frame.tick) >= Number(externalPlayheadTick));
+    seekToFrameIndex(index < 0 ? frames.length - 1 : index);
+  }, [externalPlayheadTick, frames, tickRate]);
 
   const seekToEvent = (event) => {
     if (!frames.length) return;

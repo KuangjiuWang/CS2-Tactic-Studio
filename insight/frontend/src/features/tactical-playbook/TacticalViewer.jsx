@@ -132,6 +132,29 @@ function Viewer({ initialTactic = null }) {
     }
   };
 
+  const retryFailedPovs = async () => {
+    if (!batch?.id || !workspace || !batch.players?.some((player) => player.status !== "Complete") || prepareLock.current) return;
+    prepareLock.current = true;
+    setPreparing(true);
+    setError("");
+    try {
+      const { data } = await API.post(`/tactical/prepare-povs/${batch.id}/retry`, {
+        demo_path: batch.demo_path || demoPath,
+        analysis_workspace: workspace,
+        round_number: batch.round_number || actualRound,
+        side: batch.side || side,
+        recording_mode: batch.recording_mode || recordingMode,
+      });
+      setBatch(data);
+    } catch (reason) {
+      const detail = reason?.response?.data?.detail;
+      setError(typeof detail === "object" ? detail.message || JSON.stringify(detail) : String(detail || reason.message));
+    } finally {
+      prepareLock.current = false;
+      setPreparing(false);
+    }
+  };
+
   useEffect(() => {
     if (batch?.status !== "Complete" || batch.players?.length !== 5 || batch.players.some((player) => player.status !== "Complete")) return;
     if (batch.id === savedTactic?.metadata?.pov_batch_id || autoSaveBatchRef.current === batch.id) return;
@@ -300,6 +323,7 @@ function Viewer({ initialTactic = null }) {
           <button type="button" data-testid="record-mode-hlae" aria-pressed={recordingMode === "hlae"} title={t("playbook.viewer3")} disabled={preparing || (batch && !["Complete", "Failed"].includes(batch.status))} className={recordingMode === "hlae" ? "is-selected" : ""} onClick={() => setRecordingMode("hlae")}>HLAE</button>
         </div>
         {recordingMode === "hlae" && <span className="tactical-mode-hint">{t("playbook.viewer4")}</span>}
+        {batch && ["Complete", "Failed"].includes(batch.status) && batch.players?.some((player) => player.status !== "Complete") && <button type="button" className="tactical-action" onClick={retryFailedPovs} disabled={preparing}>{t("playbook.retryFailedPovs")}</button>}
         <Link to="/tactics" className="tactical-action"><ArrowLeft size={15} />{t("playbook.back")}</Link>
         <button type="button" className="tactical-action tactical-action--primary" onClick={prepare} disabled={preparing || players.length !== 5 || (batch && !["Complete", "Failed"].includes(batch.status))}>{t("playbook.viewer5")}</button>
       </div>
@@ -310,10 +334,10 @@ function Viewer({ initialTactic = null }) {
       <POVSelector players={players} batch={batch} selected={selected} selectView={selectView} tick={tick} tickRate={tickRate} playing={playing} speed={speed} />
       <main className={`tactical-stage ${selected === "2d" ? "is-2d" : ""}`} ref={stageRef}>
         <div className="tactical-video-pane">
-          {selected !== "2d" && (videoUrl ? <video key={videoUrl} ref={videoRef} src={videoUrl} playsInline className="tactical-main-video" onTimeUpdate={(event) => { const nextTick = povSecondsToTick(event.currentTarget.currentTime, selectedPov.coverage_start_tick, tickRate); setTick(nextTick); setReplaySeek(nextTick); }} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onRateChange={(event) => setSpeed(event.currentTarget.playbackRate)} onVolumeChange={(event) => setVolume(event.currentTarget.volume)} /> : <div className="tactical-video-empty"><span>{selectedPov?.status === "Failed" ? selectedPov.error : t("playbook.viewer8")}</span><small>{batch?.status || "Waiting"}</small></div>)}
+          {selected !== "2d" && (videoUrl ? <video key={videoUrl} ref={videoRef} src={videoUrl} playsInline className="tactical-main-video" onTimeUpdate={(event) => { const nextTick = povSecondsToTick(event.currentTarget.currentTime, selectedPov.coverage_start_tick, tickRate); setTick(nextTick); }} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onRateChange={(event) => setSpeed(event.currentTarget.playbackRate)} onVolumeChange={(event) => setVolume(event.currentTarget.volume)} /> : <div className="tactical-video-empty"><span>{selectedPov?.status === "Failed" ? selectedPov.error : t("playbook.viewer8")}</span><small>{batch?.status || "Waiting"}</small></div>)}
           {selected !== "2d" && <div className="tactical-video-overlay"><span>{selectedPlayer?.name}</span></div>}
         </div>
-        <section className="tactical-radar-pane"><div className="tactical-panel-heading"><strong>{t("playbook.viewer9")}</strong><button onClick={() => selectView(selected === "2d" ? "0" : "2d")} title={t("playbook.expandMap")}><Maximize2 size={14} /></button></div><div className="tactical-radar-canvas"><Demo2DReplayPreview key={`${demoPath}:${actualRound}`} compact workspace={workspace} demoPath={demoPath} players={workspace.players} teamAName={workspace.team_a_name} teamBName={workspace.team_b_name} initialRound={actualRound} externalSeekTick={replaySeek} externalPlaying={playing} externalSpeed={speed} onPlayhead={onReplayTick} onPlaybackChange={onReplayPlaying} annotations={selectedStep?.annotations || []} annotationMode={selectedStep ? annotationMode : "select"} annotationColor={annotationColor} onAnnotationCommit={(item) => void commitAnnotation(item)} onAnnotationDelete={(id) => void removeAnnotation(id)} /></div><div className="tactical-map-legend"><span className="tactical-legend-t">● T</span><span className="tactical-legend-ct">● CT</span><span>☁ {t("playbook.viewer10")}</span><span>✦ {t("playbook.viewer11")}</span></div></section>
+        <section className="tactical-radar-pane"><div className="tactical-panel-heading"><strong>{t("playbook.viewer9")}</strong><button onClick={() => selectView(selected === "2d" ? "0" : "2d")} title={t("playbook.expandMap")}><Maximize2 size={14} /></button></div><div className="tactical-radar-canvas"><Demo2DReplayPreview key={`${demoPath}:${actualRound}`} compact workspace={workspace} demoPath={demoPath} players={workspace.players} teamAName={workspace.team_a_name} teamBName={workspace.team_b_name} initialRound={actualRound} externalSeekTick={replaySeek} externalPlayheadTick={selected === "2d" ? null : tick} externalPlaying={playing} externalSpeed={speed} onPlayhead={onReplayTick} onPlaybackChange={onReplayPlaying} annotations={selectedStep?.annotations || []} annotationMode={selectedStep ? annotationMode : "select"} annotationColor={annotationColor} onAnnotationCommit={(item) => void commitAnnotation(item)} onAnnotationDelete={(id) => void removeAnnotation(id)} /></div><div className="tactical-map-legend"><span className="tactical-legend-t">● T</span><span className="tactical-legend-ct">● CT</span><span>☁ {t("playbook.viewer10")}</span><span>✦ {t("playbook.viewer11")}</span></div></section>
         <UtilityFeed visibleEvents={visibleEvents} tick={tick} tickRate={tickRate} startTick={startTick} seekToTick={seekToTick} />
       </main>
     </div>

@@ -72,6 +72,7 @@ export default {
   "playbook.viewer4": "Alternate engine",
   "playbook.viewer5": "Generate 5 real POVs",
   "playbook.viewer6": "POV generation failed. Please retry.",
+  "playbook.retryFailedPovs": "Retry failed POVs",
   "playbook.viewer7": "2D Tactical",
   "playbook.viewer8": "Real POV is not ready",
   "playbook.viewer9": "2D tactical map",

@@ -72,6 +72,7 @@ export default {
   "playbook.viewer4": "备用引擎",
   "playbook.viewer5": "生成五个真实 POV",
   "playbook.viewer6": "POV 生成失败，请重试。",
+  "playbook.retryFailedPovs": "仅重试失败的 POV",
   "playbook.viewer7": "2D 战术视图",
   "playbook.viewer8": "真实 POV 尚未录制完成",
   "playbook.viewer9": "2D 战术地图",

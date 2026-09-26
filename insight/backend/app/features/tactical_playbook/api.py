@@ -96,6 +96,16 @@ def _jobs(selection: RoundSelection) -> list[dict]:
         raise HTTPException(422, str(exc)) from exc
 
 
+def _validate_hlae_ready() -> None:
+    config = load_config()
+    try:
+        ffmpeg = resolve_ffmpeg_binary(config.ffmpeg_path)
+        validate_hlae_installation(config.hlae_path, config.cs2_path, str(ffmpeg))
+        resolve_ffprobe_binary(ffmpeg)
+    except (HLAECaptureError, MontageComposerError, OSError) as exc:
+        raise HTTPException(422, {"code": "HLAE_NOT_READY", "message": str(exc)}) from exc
+
+
 @router.post("/pov-plan")
 async def pov_plan(selection: RoundSelection):
     return {"jobs": _jobs(selection)}
@@ -199,8 +209,14 @@ def _mux_hlae_capture(video: Path, audio: Path, destination: Path, fps: int = 60
     temporary.replace(destination)
 
 
-async def _run_hlae_batch(batch_id: str, jobs: list[dict], tick_rate: float) -> None:
+async def _run_hlae_batch(
+    batch_id: str,
+    jobs: list[dict],
+    tick_rate: float,
+    player_indices: list[int] | None = None,
+) -> None:
     state = _batches[batch_id]
+    player_indices = player_indices or list(range(len(jobs)))
     config = load_config()
     hlae_ffmpeg = resolve_ffmpeg_binary(config.ffmpeg_path)
     files = validate_hlae_installation(config.hlae_path, config.cs2_path, str(hlae_ffmpeg))
@@ -208,11 +224,13 @@ async def _run_hlae_batch(batch_id: str, jobs: list[dict], tick_rate: float) -> 
     base_dir = get_data_dir() / "tactical-povs" / batch_id
     base_dir.mkdir(parents=True, exist_ok=True)
 
-    for index, job in enumerate(jobs):
-        item = state["players"][index]
-        capture_dir = base_dir / "hlae" / f"player{index + 1}"
-        output = base_dir / f"player{index + 1}.mp4"
-        proxy = base_dir / f"player{index + 1}-proxy.mp4"
+    for job_index, job in enumerate(jobs):
+        player_index = player_indices[job_index]
+        item = state["players"][player_index]
+        attempt = max(1, int(item.get("attempt") or 1))
+        capture_dir = base_dir / "hlae" / f"player{player_index + 1}" / f"attempt-{attempt}"
+        output = base_dir / f"player{player_index + 1}.mp4"
+        proxy = base_dir / f"player{player_index + 1}-proxy.mp4"
 
         def report(status: str, message: str, player: dict = item) -> None:
             def apply_update() -> None:
@@ -268,30 +286,38 @@ async def _run_hlae_batch(batch_id: str, jobs: list[dict], tick_rate: float) -> 
                 end_tick=int(result["end_tick"]),
                 tick_rate=tick_rate,
                 source="HLAE",
-                stream_url=f"/api/tactical/povs/{batch_id}/{index + 1}/video",
-                proxy_url=f"/api/tactical/povs/{batch_id}/{index + 1}/proxy",
+                stream_url=f"/api/tactical/povs/{batch_id}/{player_index + 1}/video",
+                proxy_url=f"/api/tactical/povs/{batch_id}/{player_index + 1}/proxy",
                 render_log_path=str(result["render_log_path"]),
                 error=None,
             )
             item.pop("message", None)
         except Exception as exc:
-            logger.exception("HLAE POV %s failed in batch %s", index + 1, batch_id)
+            logger.exception("HLAE POV %s failed in batch %s", player_index + 1, batch_id)
             item.update(status="Failed", error=str(exc))
         _persist_batch(state)
 
 
-async def _run_batch(batch_id: str, jobs: list[dict], tick_rate: float) -> None:
+async def _run_batch(
+    batch_id: str,
+    jobs: list[dict],
+    tick_rate: float,
+    player_indices: list[int] | None = None,
+) -> None:
     global _active_batch
     state = _batches[batch_id]
+    player_indices = player_indices or list(range(len(jobs)))
+    state.pop("error", None)
     finalizers: dict[str, asyncio.Task] = {}
     session = AsyncExitStack()
 
     def persist_state() -> None:
         _persist_batch(state)
 
-    async def finalize(index: int, result: dict) -> None:
-        job = jobs[index]
-        item = state["players"][index]
+    async def finalize(job_index: int, result: dict) -> None:
+        player_index = player_indices[job_index]
+        job = jobs[job_index]
+        item = state["players"][player_index]
         if not result.get("success"):
             item.update(status="Failed", error=str(result.get("error") or "OBS recording failed"))
             persist_state()
@@ -302,19 +328,19 @@ async def _run_batch(batch_id: str, jobs: list[dict], tick_rate: float) -> None:
             expected = (job["coverage_end_tick"] - job["coverage_start_tick"]) / tick_rate
             metadata = await asyncio.to_thread(_probe_real_video, source, expected)
             # Keep the upstream recording; tactics own a normalized MP4.
-            dest = get_data_dir() / "tactical-povs" / batch_id / f"player{index + 1}.mp4"
+            dest = get_data_dir() / "tactical-povs" / batch_id / f"player{player_index + 1}.mp4"
             dest.parent.mkdir(parents=True, exist_ok=True)
             item["status"] = "Encoding"
             await asyncio.to_thread(_normalize_pov, source, dest)
             metadata = await asyncio.to_thread(_probe_real_video, dest, expected)
-            proxy = dest.with_name(f"player{index + 1}-proxy.mp4")
+            proxy = dest.with_name(f"player{player_index + 1}-proxy.mp4")
             await asyncio.to_thread(_make_proxy, dest, proxy)
             metadata.update({
                 "video_path": str(dest), "proxy_path": str(proxy),
                 "start_tick": job["coverage_start_tick"],
                 "end_tick": job["coverage_end_tick"], "tick_rate": tick_rate,
-                "stream_url": f"/api/tactical/povs/{batch_id}/{index + 1}/video",
-                "proxy_url": f"/api/tactical/povs/{batch_id}/{index + 1}/proxy",
+                "stream_url": f"/api/tactical/povs/{batch_id}/{player_index + 1}/video",
+                "proxy_url": f"/api/tactical/povs/{batch_id}/{player_index + 1}/proxy",
             })
             item.update(status="Complete", **metadata)
         except (OSError, ValueError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
@@ -326,10 +352,12 @@ async def _run_batch(batch_id: str, jobs: list[dict], tick_rate: float) -> None:
         if state.get("recording_mode") == "hlae":
             state["status"] = "Preparing HLAE"
             persist_state()
-            await _run_hlae_batch(batch_id, jobs, tick_rate)
+            await _run_hlae_batch(batch_id, jobs, tick_rate, player_indices)
             state["status"] = "Complete" if all(p["status"] == "Complete" for p in state["players"]) else "Failed"
             if state["status"] == "Failed":
                 state["error"] = "HLAE did not complete all five real POV renders. See each player's render status/log."
+            else:
+                state.pop("error", None)
             return
         state["status"] = "Connecting OBS"
         persist_state()
@@ -341,14 +369,15 @@ async def _run_batch(batch_id: str, jobs: list[dict], tick_rate: float) -> None:
         def on_progress(status: str, request_id: str | None) -> None:
             state["status"] = status
             if request_id in by_id:
-                state["players"][by_id[request_id]]["status"] = status
+                state["players"][player_indices[by_id[request_id]]]["status"] = status
             persist_state()
         def on_result(result: dict) -> None:
             request_id = result.get("request_id")
-            index = by_id.get(request_id)
-            if index is not None and request_id not in finalizers:
-                state["players"][index]["status"] = "Verifying" if result.get("success") else "Failed"
-                finalizers[request_id] = asyncio.create_task(finalize(index, result))
+            job_index = by_id.get(request_id)
+            if job_index is not None and request_id not in finalizers:
+                player_index = player_indices[job_index]
+                state["players"][player_index]["status"] = "Verifying" if result.get("success") else "Failed"
+                finalizers[request_id] = asyncio.create_task(finalize(job_index, result))
         observer_token = recording_result_observer.set(on_result)
         progress_token = recording_progress_observer.set(on_progress)
         verify_token = require_verified_pov.set(True)
@@ -359,14 +388,16 @@ async def _run_batch(batch_id: str, jobs: list[dict], tick_rate: float) -> None:
             recording_progress_observer.reset(progress_token)
             require_verified_pov.reset(verify_token)
         by_request = {r.get("request_id"): r for r in results if isinstance(r, dict)}
-        for request_id, index in by_id.items():
+        for request_id, job_index in by_id.items():
             if request_id not in finalizers:
-                finalizers[request_id] = asyncio.create_task(finalize(index, by_request.get(request_id) or {}))
+                finalizers[request_id] = asyncio.create_task(finalize(job_index, by_request.get(request_id) or {}))
         if finalizers:
             state["status"] = "Encoding"
             persist_state()
             await asyncio.gather(*finalizers.values())
         state["status"] = "Complete" if all(p["status"] == "Complete" for p in state["players"]) else "Failed"
+        if state["status"] == "Complete":
+            state.pop("error", None)
     except Exception as exc:  # surface real CS2/OBS failures, never synthesize videos
         logger.exception("Five-POV batch %s failed", batch_id)
         if finalizers:
@@ -399,13 +430,7 @@ async def prepare_povs(selection: RoundSelection):
         raise HTTPException(409, "another five-POV batch is running")
     jobs = _jobs(selection)
     if selection.recording_mode == "hlae":
-        config = load_config()
-        try:
-            ffmpeg = resolve_ffmpeg_binary(config.ffmpeg_path)
-            validate_hlae_installation(config.hlae_path, config.cs2_path, str(ffmpeg))
-            resolve_ffprobe_binary(ffmpeg)
-        except (HLAECaptureError, MontageComposerError, OSError) as exc:
-            raise HTTPException(422, {"code": "HLAE_NOT_READY", "message": str(exc)}) from exc
+        _validate_hlae_ready()
     batch_id = uuid4().hex
     _batches[batch_id] = {
         "id": batch_id, "status": "Waiting", "round_number": selection.round_number,
@@ -416,7 +441,7 @@ async def prepare_povs(selection: RoundSelection):
             "player_id": j["player_id"], "player_name": j["player_name"], "steam_id64": j["steam_id64"],
             "coverage_start_tick": j["coverage_start_tick"],
             "coverage_end_tick": j["coverage_end_tick"],
-            "status": "Waiting", "video_path": None,
+            "status": "Waiting", "video_path": None, "attempt": 1,
         } for j in jobs],
     }
     _persist_batch(_batches[batch_id])
@@ -432,6 +457,75 @@ async def prepare_povs_status(batch_id: str):
     state = _get_batch(batch_id)
     if state is None:
         raise HTTPException(404, "unknown batch")
+    return state
+
+
+@router.post("/prepare-povs/{batch_id}/retry", status_code=202)
+async def retry_failed_povs(batch_id: str, selection: RoundSelection):
+    """Retry only unfinished players while keeping successful POV files in place."""
+    global _active_batch
+    if _active_batch is not None:
+        raise HTTPException(409, "another five-POV batch is running")
+    state = _get_batch(batch_id)
+    if state is None:
+        raise HTTPException(404, "unknown batch")
+    if state.get("status") not in {"Complete", "Failed"}:
+        raise HTTPException(409, "POV batch is still running")
+    if selection.demo_path != state.get("demo_path"):
+        raise HTTPException(409, "retry must use the original demo")
+    if int(selection.round_number) != int(state.get("round_number") or 0) or selection.side.upper() != str(state.get("side") or "").upper():
+        raise HTTPException(409, "retry must use the original round and side")
+    try:
+        selection_tick_rate = float(selection.analysis_workspace.get("tick_rate") or 0)
+        batch_tick_rate = float(state.get("tick_rate") or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(409, "retry demo analysis does not match the original POV batch") from exc
+    if selection_tick_rate != batch_tick_rate:
+        raise HTTPException(409, "retry demo analysis does not match the original POV batch")
+
+    retry_selection = selection.model_copy(update={"recording_mode": state.get("recording_mode") or "obs"})
+    rebuilt_jobs = _jobs(retry_selection)
+    players = state.get("players") or []
+    jobs_by_steam_id = {str(job.get("steam_id64") or ""): job for job in rebuilt_jobs}
+    if len(players) != 5 or len(rebuilt_jobs) != 5 or len(jobs_by_steam_id) != 5:
+        raise HTTPException(409, "retry batch no longer matches its original five-player roster")
+    player_steam_ids = [str(player.get("steam_id64") or "") for player in players]
+    if len(set(player_steam_ids)) != 5 or any(not steam_id for steam_id in player_steam_ids):
+        raise HTTPException(409, "retry batch no longer has a valid five-player roster")
+    if any(str(player.get("steam_id64") or "") not in jobs_by_steam_id for player in players):
+        raise HTTPException(409, "retry players do not match the original POV batch")
+    for player in players:
+        job = jobs_by_steam_id[str(player["steam_id64"])]
+        if (
+            int(job.get("coverage_start_tick") or 0) != int(player.get("coverage_start_tick") or 0)
+            or int(job.get("coverage_end_tick") or 0) != int(player.get("coverage_end_tick") or 0)
+        ):
+            raise HTTPException(409, "retry coverage does not match the original POV batch")
+
+    retry_indices = [index for index, player in enumerate(players) if player.get("status") != "Complete"]
+    if not retry_indices:
+        raise HTTPException(409, "all five POVs are already complete")
+    if retry_selection.recording_mode == "hlae":
+        _validate_hlae_ready()
+
+    jobs = [jobs_by_steam_id[str(players[index]["steam_id64"])] for index in retry_indices]
+    for index in retry_indices:
+        player = players[index]
+        player.update(status="Waiting", attempt=max(1, int(player.get("attempt") or 1)) + 1)
+        for key in (
+            "error", "message", "video_path", "proxy_path", "stream_url", "proxy_url",
+            "duration", "fps", "source", "start_tick", "end_tick", "tick_rate", "render_log_path",
+        ):
+            player.pop(key, None)
+    state.update(status="Waiting")
+    state.pop("error", None)
+    _persist_batch(state)
+    _active_batch = batch_id
+    task = asyncio.create_task(_run_batch(
+        batch_id, jobs, float(retry_selection.analysis_workspace["tick_rate"]), retry_indices,
+    ))
+    _batch_tasks.add(task)
+    task.add_done_callback(_batch_tasks.discard)
     return state
 
 
