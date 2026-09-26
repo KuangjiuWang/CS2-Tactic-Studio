@@ -20,7 +20,8 @@ export default function TacticalPlaybookPage() {
   const [dialog, setDialog] = useState(null), [busy, setBusy] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const fileRef = useRef(null);
-  const filters = Object.fromEntries(["search", "map", "side", "pov", "sort"].map((key) => [key, params.get(key) || (key === "sort" ? "updated" : "")]));
+  const filterKeys = ["search", "map", "side", "pov", "category", "site", "utility", "result", "sort"];
+  const filters = Object.fromEntries(filterKeys.map((key) => [key, params.get(key) || (key === "sort" ? "updated" : "")]));
   const refresh = useCallback(async () => { const { data } = await API.get("/tactical/playbooks"); setTree(data); }, []);
   useEffect(() => {
     let active = true;
@@ -55,12 +56,13 @@ export default function TacticalPlaybookPage() {
     });
     setDialog({ kind: "tactics", action: key, item });
   };
-  const submit = async ({ name, selected, parent }) => {
+  const submit = async ({ name, selected, parent, classification }) => {
     setBusy(true);
     try {
       const { kind, action: key, item } = dialog;
       if (["newFolder", "newSubfolder"].includes(key)) await API.post("/tactical/folders", { name, parent_id: key === "newSubfolder" ? item.id : null });
       else if (key === "rename") await API.patch(`/tactical/${kind}/${item.id}/name`, { name });
+      else if (key === "classify") await API.patch(`/tactical/tactics/${item.id}/classification`, classification);
       else if (key === "move") await API.patch(`/tactical/folders/${item.id}/parent`, { parent_id: parent });
       else if (key === "addToFolder") await API.put(`/tactical/tactics/${item.id}/folders`, { folder_ids: selected });
       else if (key === "delete") await API.delete(`/tactical/${kind}/${item.id}`);

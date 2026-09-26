@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ...env_utils import get_data_dir
 from ...env_utils import load_config
@@ -784,6 +784,14 @@ class RecordingLink(BaseModel):
     batch_id: str
 
 
+class TacticClassification(BaseModel):
+    category: Literal["default", "execute", "retake", "postplant", "clutch", "eco", "other"] | None = None
+    site: Literal["A", "B", "Mid", "Other"] | None = None
+    utility: list[Literal["smoke", "flash", "molotov", "he", "decoy"]] = Field(default_factory=list)
+    result: Literal["win", "loss", "neutral"] | None = None
+    tags: list[str] = Field(default_factory=list, max_length=20)
+
+
 @router.put("/tactics/{tactic_id}/recording")
 async def link_recording(tactic_id: str, body: RecordingLink):
     batch = _get_batch(body.batch_id)
@@ -795,6 +803,14 @@ async def link_recording(tactic_id: str, body: RecordingLink):
         raise HTTPException(422, "recording does not match the tactic")
     await TacticalStore().update_recording(tactic_id, body.batch_id)
     return {"ok": True}
+
+
+@router.patch("/tactics/{tactic_id}/classification")
+async def classify_tactic(tactic_id: str, body: TacticClassification):
+    try:
+        return await TacticalStore().update_classification(tactic_id, body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @router.put("/tactics/{tactic_id}/folders")

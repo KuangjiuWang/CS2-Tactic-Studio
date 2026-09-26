@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { descendants, filterTactics, folderPath } from "./libraryModel";
 const tactics = [
-  { id: "a", name: "Spirit A Split", map_name: "de_mirage", side: "T", round_number: 17, folder_ids: ["training", "other"], metadata: { source_match: "Spirit vs Vitality", tags: ["execute"] } },
+  { id: "a", name: "Spirit A Split", map_name: "de_mirage", side: "T", round_number: 17, folder_ids: ["training", "other"], metadata: { source_match: "Spirit vs Vitality", tags: ["execute"], classification: { category: "execute", site: "A", utility: ["smoke", "flash"], result: "win", tags: ["fast"] } } },
   { id: "b", name: "Hold B", map_name: "de_nuke", side: "CT", round_number: 2, folder_ids: [], metadata: {} },
 ];
 describe("library filters", () => {
@@ -10,6 +10,11 @@ describe("library filters", () => {
     expect(filterTactics(tactics, { folder: "training", side: "CT" })).toEqual([]);
     expect(filterTactics(tactics, { search: "execute" })).toEqual([tactics[0]]);
     expect(filterTactics(tactics, {})).toHaveLength(2);
+  });
+  it("filters classification by category, area, utility and result", () => {
+    expect(filterTactics(tactics, { category: "execute", site: "A", utility: "smoke", result: "win" })).toEqual([tactics[0]]);
+    expect(filterTactics(tactics, { category: "clutch" })).toEqual([]);
+    expect(filterTactics(tactics, { search: "fast flash" })).toEqual([tactics[0]]);
   });
   it("resolves nested paths and excludes the full descendant set from moves", () => {
     const folders = [{ id: "a", name: "Training" }, { id: "b", name: "Mirage", parent_id: "a" }, { id: "c", name: "A", parent_id: "b" }];

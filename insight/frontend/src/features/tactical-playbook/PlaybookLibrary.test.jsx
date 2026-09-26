@@ -60,4 +60,27 @@ describe("Playbook library", () => {
     expect(screen.getByLabelText("Search tactics...").value).toBe("Spirit");
     expect(screen.queryByText("Hold B")).toBeNull();
   });
+  it("filters and edits tactical classification", async () => {
+    tree.tactics[0].metadata.classification = { category: "execute", site: "A", utility: ["smoke"], result: "win", tags: ["fast"] };
+    API.patch.mockImplementation(async (_url, classification) => {
+      tree.tactics[0].metadata.classification = classification;
+      return { data: tree.tactics[0] };
+    });
+    show();
+    await screen.findByText("Spirit A Split");
+    fireEvent.change(screen.getByLabelText("Tactic type"), { target: { value: "execute" } });
+    fireEvent.change(screen.getByLabelText("Key utility"), { target: { value: "smoke" } });
+    expect(screen.queryByText("Hold B")).toBeNull();
+
+    fireEvent.click(screen.getByLabelText("Actions Spirit A Split"));
+    fireEvent.click(screen.getByText("Edit classification"));
+    const categorySelect = screen.getByRole("dialog").querySelector('select[aria-label="Tactic type"]');
+    fireEvent.change(categorySelect, { target: { value: "clutch" } });
+    expect(categorySelect.value).toBe("clutch");
+    fireEvent.change(screen.getByLabelText("Custom tags"), { target: { value: "late retake, saved" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(API.patch).toHaveBeenCalledWith("/tactical/tactics/spirit/classification", expect.objectContaining({
+      category: "clutch", site: "A", utility: ["smoke"], result: "win", tags: ["late retake", "saved"],
+    })));
+  });
 });

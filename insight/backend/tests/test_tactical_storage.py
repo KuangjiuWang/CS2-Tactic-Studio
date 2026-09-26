@@ -63,6 +63,30 @@ def test_tactic_source_demo_can_be_relinked(tmp_path):
     asyncio.run(scenario())
 
 
+def test_tactic_classification_persists_without_replacing_recording_metadata(tmp_path):
+    async def scenario():
+        store = TacticalStore(tmp_path / "classification.db")
+        tactic = await store.create_tactic(
+            name="B execute", map_name="de_mirage", side="T", demo_path="match.dem",
+            round_number=4, round_start_tick=100, freeze_end_tick=200, round_end_tick=900,
+            metadata={"pov_batch_id": "local-batch", "source_match": "Alpha vs Bravo"},
+        )
+        updated = await store.update_classification(tactic["id"], {
+            "category": "execute", "site": "B", "utility": ["smoke", "flash", "smoke"],
+            "result": "win", "tags": ["  fast  ", "FAST", "late flash"],
+        })
+        assert updated["metadata"]["pov_batch_id"] == "local-batch"
+        assert updated["metadata"]["source_match"] == "Alpha vs Bravo"
+        assert updated["metadata"]["classification"] == {
+            "category": "execute", "site": "B", "utility": ["smoke", "flash"],
+            "result": "win", "tags": ["fast", "late flash"],
+        }
+        with pytest.raises(ValueError, match="tactic does not exist"):
+            await store.update_classification("missing", {"category": None, "site": None, "utility": [], "result": None, "tags": []})
+
+    asyncio.run(scenario())
+
+
 async def _tactic_can_move_between_folders(tmp_path):
     store = TacticalStore(tmp_path / "playbook.db")
     folder = await store.create_folder("T side")

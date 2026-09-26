@@ -34,6 +34,11 @@
 .tactical-match-meta { margin-top: 2px; color: var(--tactical-muted); font-size: 11px; }
 .tactical-match-meta span { margin: 0 5px; color: var(--cs2-text-secondary); }
 .tactical-header-actions { z-index: 1; display: flex; align-items: center; gap: 8px; }
+.tactical-autosave { display:flex; align-items:center; gap:10px; min-height:28px; padding:3px 12px; border-bottom:1px solid var(--tactical-edge); background:var(--cs2-bg-card); color:var(--cs2-text-secondary); font-size:11px; }
+.tactical-autosave small { overflow:hidden; color:var(--cs2-text-muted); text-overflow:ellipsis; white-space:nowrap; }
+.tactical-autosave--saved { color:var(--cs2-highlight); }
+.tactical-autosave--failed { color:var(--cs2-fail); }
+.tactical-autosave button { margin-left:auto; padding:4px 8px; border:1px solid var(--cs2-border); border-radius:4px; color:var(--cs2-text-primary); }
 .tactical-recording-mode { display: inline-flex; padding: 2px; border: 1px solid var(--cs2-border); border-radius: 6px; background: var(--cs2-bg-card); }
 .tactical-recording-mode button { min-width: 48px; height: 28px; padding: 0 8px; border-radius: 4px; color: var(--cs2-text-secondary); font-size: 10px; font-weight: 700; }
 .tactical-recording-mode button.is-selected { color: var(--cs2-text-secondary); background: var(--cs2-bg-card); box-shadow: inset 0 0 0 1px var(--cs2-border); }
@@ -109,6 +114,8 @@
 .tactical-controls, .tactical-stepbar { display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 4px 11px; border-bottom: 1px solid var(--cs2-border); }
 .tactical-play-button { display: grid; place-items: center; flex: 0 0 34px; height: 32px; border: 1px solid var(--cs2-border); border-radius: 5px; color: var(--cs2-text-secondary); background: var(--cs2-bg-card); }
 .tactical-time-readout { min-width: 76px; color: var(--cs2-text-secondary); font-family: monospace; white-space: nowrap; }.tactical-time-readout span { color: var(--cs2-text-secondary); }
+.tactical-jump-button,.tactical-step-nav { display:inline-flex; align-items:center; justify-content:center; min-height:25px; padding:0 7px; border:1px solid var(--cs2-border); border-radius:4px; color:var(--cs2-text-secondary); background:var(--cs2-bg-card); font-size:10px; white-space:nowrap; }
+.tactical-jump-button:disabled,.tactical-step-nav:disabled { opacity:.4; cursor:not-allowed; }
 .tactical-controls select, .tactical-name-input, .tactical-step-edit input, .tactical-annotation-toolbar input { min-width: 0; padding: 5px 7px; border: 1px solid var(--cs2-border); border-radius: 4px; color: var(--cs2-text-secondary); background: var(--cs2-bg-card); }
 .tactical-volume, .tactical-quality { display: flex; align-items: center; gap: 5px; color: var(--cs2-text-secondary); white-space: nowrap; }
 .tactical-volume input { width: 68px; accent-color: var(--cs2-accent); }.tactical-quality input { accent-color: var(--cs2-accent); }
@@ -147,7 +154,24 @@
 /* Viewer chrome follows the shared theme; 3D receives the primary workspace. */
 .tactical-workspace { color:var(--cs2-text-primary); background:var(--cs2-bg-page); }
 .tactical-body { grid-template-columns:142px minmax(0,1fr); }
+.tactical-body.is-multiview { grid-template-columns:minmax(0,1fr); }
 .tactical-stage { grid-template-columns:minmax(0,2.3fr) minmax(260px,1fr); }
+.tactical-stage.is-multiview { grid-template-columns:minmax(0,2.3fr) minmax(240px,1fr); grid-template-rows:minmax(0,1.3fr) minmax(120px,.7fr); }
+.tactical-stage.is-multiview .tactical-video-pane { grid-column:1; grid-row:1 / span 2; }
+.tactical-stage.is-multiview .tactical-radar-pane { grid-column:2; grid-row:1; }
+.tactical-stage.is-multiview .tactical-events-pane { grid-column:2; grid-row:2; }
+.tactical-view-modes { position:absolute; z-index:4; top:8px; right:8px; display:flex; gap:4px; padding:3px; border:1px solid var(--cs2-border); border-radius:6px; background:var(--cs2-bg-card); }
+.tactical-view-modes button { padding:5px 8px; border-radius:4px; color:var(--cs2-text-secondary); font-size:10px; }
+.tactical-view-modes button[aria-pressed="true"] { color:var(--cs2-accent); background:var(--cs2-accent-soft); }
+.tactical-multiview { position:absolute; inset:42px 8px 8px; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); grid-template-rows:repeat(2,minmax(0,1fr)); gap:7px; min-height:0; }
+.tactical-multiview-tile { display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; border:1px solid var(--cs2-border); border-radius:5px; background:var(--cs2-bg-card); text-align:left; }
+.tactical-multiview-tile.is-focused { border-color:var(--cs2-accent); box-shadow:inset 0 0 0 1px var(--cs2-accent); }
+.tactical-multiview-video { display:grid; place-items:center; min-height:0; flex:1; overflow:hidden; background:#000; }
+.tactical-multiview-video video { width:100%; height:100%; object-fit:contain; }
+.tactical-multiview-status { color:var(--cs2-text-muted); font-size:11px; }
+.tactical-multiview-name { display:flex; justify-content:space-between; gap:8px; padding:5px 7px; color:var(--cs2-text-primary); font-size:10px; }
+.tactical-multiview-name strong,.tactical-multiview-name small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tactical-multiview-name small { color:var(--cs2-text-muted); }
 .tactical-video-pane,.tactical-pov-preview { background:var(--cs2-bg-page); }
 .tactical-main-video { aspect-ratio:16/9; }
 .tactical-header { flex-wrap:wrap; gap:8px; padding:8px 12px; }
@@ -182,3 +206,4 @@
 .tactical-workspace .tactical-marker.tactical-tone-kill { color:var(--cs2-fail); }
 @media(max-width:1400px) { .tactical-body { grid-template-columns:130px minmax(0,1fr); } }
 @media(max-width:1000px) { .tactical-body { grid-template-columns:110px minmax(0,1fr); }.tactical-stage { grid-template-columns:minmax(0,2.3fr) minmax(240px,1fr); } }
+@media(max-width:780px) { .tactical-stage.is-multiview { grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(0,1fr); }.tactical-stage.is-multiview .tactical-video-pane { grid-row:1; }.tactical-multiview { grid-template-columns:repeat(2,minmax(0,1fr)); grid-template-rows:repeat(3,minmax(0,1fr)); }.tactical-jump-button { padding:0 4px; font-size:0; }.tactical-jump-button::first-letter { font-size:12px; } }

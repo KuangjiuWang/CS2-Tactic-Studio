@@ -258,6 +258,35 @@ class TacticalStore:
                              (json.dumps(metadata, ensure_ascii=False), _now(), tactic_id))
             await db.commit()
 
+    async def update_classification(self, tactic_id: str, classification: dict) -> dict:
+        await self.initialize()
+        tags = []
+        for value in classification.get("tags", []):
+            tag = str(value).strip()[:40]
+            if tag and tag.casefold() not in {item.casefold() for item in tags}:
+                tags.append(tag)
+            if len(tags) >= 20:
+                break
+        normalized = {
+            "category": classification.get("category"),
+            "site": classification.get("site"),
+            "utility": list(dict.fromkeys(classification.get("utility", []))),
+            "result": classification.get("result"),
+            "tags": tags,
+        }
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute("SELECT metadata_json FROM tactical_tactics WHERE id=?", (tactic_id,))
+            row = await cursor.fetchone()
+            if row is None:
+                raise ValueError("tactic does not exist")
+            metadata = json.loads(row[0])
+            metadata["classification"] = normalized
+            await db.execute("UPDATE tactical_tactics SET metadata_json=?,updated_at=? WHERE id=?",
+                             (json.dumps(metadata, ensure_ascii=False), _now(), tactic_id))
+            await db.commit()
+        return await self.get_tactic(tactic_id)
+
     async def relink_source_demo(self, tactic_id: str, demo_path: str, demo_hash: str) -> None:
         await self.initialize()
         async with aiosqlite.connect(self.path) as db:

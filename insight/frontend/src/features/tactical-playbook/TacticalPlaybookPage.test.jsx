@@ -96,6 +96,26 @@ describe("TacticalPlaybookPage", () => {
     expect(API.post.mock.calls[1][1]).toMatchObject({ tactic_id: "saved-tactic" });
   });
 
+  it("shows automatic save failure and retries the completed batch", async () => {
+    const completedBatch = {
+      id: "retry-save-batch", status: "Complete",
+      players: players.slice(0, 5).map((player) => ({ steam_id64: player.steam_id64, status: "Complete" })),
+    };
+    API.post.mockResolvedValueOnce({ data: { id: "saved-tactic", name: "Mirage T", metadata: {} } })
+      .mockResolvedValueOnce({ data: completedBatch });
+    API.put.mockRejectedValueOnce(new Error("temporary database error"))
+      .mockResolvedValueOnce({ data: { ok: true } });
+    API.get.mockResolvedValue({ data: { id: "saved-tactic", name: "Mirage T", metadata: { pov_batch_id: completedBatch.id } } });
+    show();
+    fireEvent.click(screen.getByRole("button", { name: /Generate 5 real POVs/ }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Automatic save failed");
+    expect(screen.getByText("temporary database error")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry save" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("POVs saved automatically"));
+    expect(API.put).toHaveBeenCalledTimes(2);
+    expect(API.put).toHaveBeenLastCalledWith("/tactical/tactics/saved-tactic/recording", { batch_id: completedBatch.id });
+  });
+
   it("defaults to OBS and sends HLAE only when the alternate renderer is selected", async () => {
     show();
     expect(screen.getByTestId("record-mode-obs").getAttribute("aria-pressed")).toBe("true");
@@ -154,6 +174,63 @@ describe("TacticalPlaybookPage", () => {
     expect(screen.getByText(/Tick 420/)).toBeTruthy();
     expect(screen.getByTestId("radar-seek").textContent).toBe("420");
     playSpy.mockRestore();
+  });
+
+  it("shows five synchronized preview streams in the one-click review grid", async () => {
+    const completedBatch = {
+      id: "grid-batch", status: "Complete", players: players.slice(0, 5).map((player, index) => ({
+        player_name: player.name, steam_id64: player.steam_id64,
+        coverage_start_tick: 100 + index * 10, coverage_end_tick: 1000,
+        status: "Complete", proxy_url: `/proxy${index}`, stream_url: `/video${index}`,
+      })),
+    };
+    API.post.mockResolvedValueOnce({ data: { id: "grid-tactic", name: "Mirage T", metadata: {} } })
+      .mockResolvedValueOnce({ data: completedBatch });
+    API.get.mockResolvedValue({ data: { id: "grid-tactic", name: "Mirage T", metadata: { pov_batch_id: completedBatch.id } } });
+    show();
+    fireEvent.click(screen.getByRole("button", { name: /Generate 5 real POVs/ }));
+    await screen.findByTestId("pov-preview-1");
+    fireEvent.click(screen.getByTestId("toggle-multiview"));
+    expect(await screen.findByTestId("tactical-multiview")).toBeTruthy();
+    expect(screen.getAllByTestId(/^multiview-pov-/)).toHaveLength(5);
+    const leader = screen.getByTestId("multiview-pov-1");
+    Object.defineProperty(leader, "currentTime", { configurable: true, value: 3, writable: true });
+    fireEvent.timeUpdate(leader);
+    expect(screen.getByText(/Tick 292/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Single POV" }));
+    expect(screen.queryByTestId("tactical-multiview")).toBeNull();
+    expect(screen.getByTestId("pov-1")).toBeTruthy();
+  });
+
+  it("jumps between nearby match events and tactical steps", async () => {
+    const reviewWorkspace = structuredClone(workspace);
+    reviewWorkspace.rounds[0].events = [
+      { type: "kill", tick: 350, actor: "A0" },
+      { type: "plant", tick: 650, actor: "A1" },
+    ];
+    API.get.mockResolvedValue({ data: {
+      id: "saved-tactic", name: "Mirage T", map_name: "de_mirage", side: "T", round_number: 1,
+      source_demo_path: "C:/demos/match.dem", source_demo_available: true,
+      metadata: { analysis_workspace: reviewWorkspace },
+      steps: [
+        { id: "step-1", step_number: 1, tick: 500, title: "Setup", note: "" },
+        { id: "step-2", step_number: 2, tick: 800, title: "Execute", note: "" },
+      ],
+    } });
+    showSavedTactic();
+    await screen.findByText(/Tick 200/);
+    fireEvent.click(screen.getByRole("button", { name: "Next event" }));
+    expect(screen.getByText(/Tick 350/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Next event" }));
+    expect(screen.getByText(/Tick 650/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Previous event" }));
+    expect(screen.getByText(/Tick 350/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Next step" }));
+    expect(screen.getByText(/Tick 500/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Next step" }));
+    expect(screen.getByText(/Tick 800/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Previous step" }));
+    expect(screen.getByText(/Tick 500/)).toBeTruthy();
   });
 
   it("relinks an older tactic after explicit confirmation when its original file is gone", async () => {
