@@ -12,12 +12,14 @@
     "core:window:allow-toggle-maximize",
     "clipboard-manager:allow-write-text",
     "dialog:allow-open",
+    "dialog:allow-save",
     "opener:default",
     {
       "identifier": "opener:allow-open-url",
       "allow": [
         { "url": "steam://run/730/*" },
-        { "url": "steam://rungame/730/*" }
+        { "url": "steam://rungame/730/*" },
+        { "url": "https://github.com/KuangjiuWang/CS2-Tactic-Studio/releases/*" }
       ]
     },
     "updater:default",

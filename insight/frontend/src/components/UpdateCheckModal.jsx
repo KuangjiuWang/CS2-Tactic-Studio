@@ -1,7 +1,7 @@
 import { useT } from "../i18n/useT.js";
 import { normalizeUpdateMode } from "../utils/desktopUpdater";
 
-/** Cloudflare / Tauri updater 检查更新弹窗 */
+/** Signed GitHub Release updater, with a manual path for earlier releases. */
 export default function UpdateCheckModal({ open, info, onClose, onCancel, onConfirm, title }) {
   const t = useT();
   if (!open || !info) return null;
@@ -13,6 +13,7 @@ export default function UpdateCheckModal({ open, info, onClose, onCancel, onConf
   const notes = String(info.release_notes || "").trim();
   const updateMode = normalizeUpdateMode(info.update_mode);
   const isForce = updateMode === "force";
+  const manualUpdate = Boolean(info.manual_url);
   const percent = Number(info.progress?.percent);
   const hasPercent = Number.isFinite(percent);
   const upToDate = status === "not-available";
@@ -30,7 +31,9 @@ export default function UpdateCheckModal({ open, info, onClose, onCancel, onConf
   } else if (isAvailable) {
     body = (
       <div className="space-y-2">
-        {isForce ? (
+        {manualUpdate ? (
+          <p className="text-sm text-cs2-text-secondary">{t("dialog.updateManualPrompt")}</p>
+        ) : isForce ? (
           <p className="text-sm font-semibold text-cs2-orange">{t("dialog.updateForceRequired")}</p>
         ) : (
           <p className="text-sm text-cs2-text-secondary">{t("dialog.updateAvailablePrompt")}</p>
@@ -54,6 +57,8 @@ export default function UpdateCheckModal({ open, info, onClose, onCancel, onConf
     );
   } else if (status === "downloaded") {
     body = <p className="text-sm text-cs2-text-secondary">{t("dialog.updateDownloaded")}</p>;
+  } else if (status === "manual-opened") {
+    body = <p className="text-sm text-cs2-text-secondary">{t("dialog.updateReleaseOpened")}</p>;
   } else if (status === "cancelled") {
     body = <p className="text-sm text-cs2-text-secondary">{t("dialog.updateCancelled")}</p>;
   }
@@ -93,7 +98,7 @@ export default function UpdateCheckModal({ open, info, onClose, onCancel, onConf
               ) : null}
             </p>
           ) : null}
-          <p className="mt-1 text-[10px] text-cs2-text-muted">{t("dialog.updateViaCloudflare")}</p>
+          <p className="mt-1 text-[10px] text-cs2-text-muted">{t("dialog.updateViaGitHub")}</p>
         </div>
         <div className="max-h-[45vh] overflow-y-auto px-4 py-3">
           {body}
@@ -123,19 +128,9 @@ export default function UpdateCheckModal({ open, info, onClose, onCancel, onConf
                 className="rounded-md bg-cs2-orange px-3 py-1.5 text-[11px] font-semibold text-cs2-text-on-accent hover:bg-cs2-accent-light"
                 onClick={() => onConfirm?.()}
               >
-                {t("dialog.updateNow")}
+                {t(manualUpdate ? "dialog.updateOpenRelease" : "dialog.updateNow")}
               </button>
             </>
-          ) : null}
-          {!isForce && status === "downloading" ? (
-            <button
-              type="button"
-              className="text-[11px] font-semibold text-cs2-orange hover:opacity-90"
-              onClick={() => onCancel?.()}
-              title={t("dialog.updateStopHint")}
-            >
-              {t("dialog.updateStop")}
-            </button>
           ) : null}
           {!forceLocked && !isAvailable ? (
             <button

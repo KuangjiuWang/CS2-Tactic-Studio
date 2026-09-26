@@ -1,6 +1,6 @@
 use std::{
     fs::{self, OpenOptions},
-    io::{Read, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -60,6 +60,204 @@ fn backend_http_with_timeout(method: &str, path: &str, timeout: Duration) -> Opt
     let mut response = String::new();
     stream.read_to_string(&mut response).ok()?;
     Some(response)
+}
+
+fn export_tactic_package_to_file_from(
+    tactic_id: &str,
+    destination: &str,
+    address: SocketAddr,
+) -> Result<String, String> {
+    if tactic_id.is_empty()
+        || tactic_id.len() > 64
+        || !tactic_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err("Invalid tactic identifier".to_string());
+    }
+    let target = PathBuf::from(destination);
+    if !target
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("cstactic"))
+    {
+        return Err("请选择 .cstactic 文件名".to_string());
+    }
+    if !target.parent().is_some_and(Path::is_dir) {
+        return Err("目标文件夹不存在".to_string());
+    }
+
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(3))
+        .map_err(|error| format!("无法连接本地战术服务：{error}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3600)))
+        .map_err(|error| error.to_string())?;
+    stream
+        .write_all(format!(
+            "GET /api/tactical/tactics/{tactic_id}/export HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+            address.port(),
+        ).as_bytes())
+        .map_err(|error| format!("无法开始战术导出：{error}"))?;
+    let mut response = BufReader::new(stream);
+    let mut line = String::new();
+    response
+        .read_line(&mut line)
+        .map_err(|error| error.to_string())?;
+    let status = line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .to_string();
+    let mut length = None;
+    loop {
+        line.clear();
+        let count = response
+            .read_line(&mut line)
+            .map_err(|error| error.to_string())?;
+        if count == 0 || line == "\r\n" {
+            break;
+        }
+        if let Some((key, value)) = line.split_once(':') {
+            if key.eq_ignore_ascii_case("content-length") {
+                length = value.trim().parse::<u64>().ok();
+            }
+        }
+    }
+    if status != "200" {
+        let mut body = String::new();
+        let _ = response.take(8192).read_to_string(&mut body);
+        let message = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("detail")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| format!("战术导出失败（HTTP {status}）"));
+        return Err(message);
+    }
+    let expected = length
+        .filter(|size| *size > 0)
+        .ok_or_else(|| "导出响应缺少有效的文件大小".to_string())?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let partial = target.with_file_name(format!(
+        ".{}-{stamp}-{}.part",
+        target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("tactic"),
+        std::process::id(),
+    ));
+    let write_result = (|| -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&partial)
+            .map_err(|error| format!("无法创建导出文件：{error}"))?;
+        let written = io::copy(&mut response.take(expected), &mut file)
+            .map_err(|error| format!("保存战术包失败：{error}"))?;
+        if written != expected {
+            return Err(format!("战术包传输不完整（{written}/{expected} 字节）"));
+        }
+        file.sync_all().map_err(|error| error.to_string())?;
+        drop(file);
+        fs::rename(&partial, &target).map_err(|error| format!("无法完成战术包保存：{error}"))?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&partial);
+    }
+    write_result.map(|()| target.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+async fn export_tactic_package(tactic_id: String, destination: String) -> Result<String, String> {
+    let address = SocketAddr::from(([127, 0, 0, 1], 19871));
+    tauri::async_runtime::spawn_blocking(move || {
+        export_tactic_package_to_file_from(&tactic_id, &destination, address)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[cfg(test)]
+mod tactic_export_tests {
+    use super::export_tactic_package_to_file_from;
+    use std::{
+        fs,
+        io::{Read, Write},
+        net::{SocketAddr, TcpListener},
+        thread,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn serve_once(status: &str, body: &[u8]) -> (SocketAddr, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let status = status.to_owned();
+        let body = body.to_vec();
+        let worker = thread::spawn(move || {
+            let (mut connection, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            connection.read(&mut request).unwrap();
+            connection
+                .write_all(
+                    format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len(),
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+            connection.write_all(&body).unwrap();
+        });
+        (address, worker)
+    }
+
+    #[test]
+    fn streams_binary_package_to_the_selected_file() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("cs2-tactic-export-test-{stamp}"));
+        fs::create_dir(&directory).unwrap();
+        let target = directory.join("share.cstactic");
+        fs::write(&target, b"previous export").unwrap();
+        let bytes = b"PK\x03\x04\x00original pov bytes\xff";
+        let (address, worker) = serve_once("200 OK", bytes);
+        let saved =
+            export_tactic_package_to_file_from("tactic-1", target.to_str().unwrap(), address)
+                .unwrap();
+        worker.join().unwrap();
+        assert_eq!(saved, target.to_string_lossy());
+        assert_eq!(fs::read(&target).unwrap(), bytes);
+        fs::remove_file(target).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn surfaces_export_errors_without_creating_a_file() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("cs2-tactic-export-error-test-{stamp}"));
+        fs::create_dir(&directory).unwrap();
+        let target = directory.join("share.cstactic");
+        let (address, worker) = serve_once("409 Conflict", br#"{"detail":"POV video is missing"}"#);
+        let error =
+            export_tactic_package_to_file_from("tactic-1", target.to_str().unwrap(), address)
+                .unwrap_err();
+        worker.join().unwrap();
+        assert_eq!(error, "POV video is missing");
+        assert!(!target.exists());
+        fs::remove_dir(directory).unwrap();
+    }
 }
 
 const EXIT_CHECK_FAILED: &str =
@@ -747,11 +945,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(BackendProcess::new())
         .invoke_handler(tauri::generate_handler![
             read_legacy_ui_state,
             launch_cs2_inspect,
-            resolve_dropped_file_paths
+            resolve_dropped_file_paths,
+            export_tactic_package
         ])
         .setup(|app| {
             // Start the backend on a worker thread so the window (and its

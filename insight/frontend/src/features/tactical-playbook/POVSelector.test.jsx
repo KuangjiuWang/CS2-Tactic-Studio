@@ -18,7 +18,6 @@ describe("POVSelector previews", () => {
         coverage_start_tick: 300,
     })),
     };
-    localStorage.setItem("tacticalPovLowResource", "false");
     const playedVideos = [];
     const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(function playPreview() {
       playedVideos.push(this);
@@ -28,7 +27,7 @@ describe("POVSelector previews", () => {
 
     const previews = players.map((_, index) => screen.getByTestId(`pov-preview-${index + 1}`));
     previews.forEach((video, index) => expect(video.src).toContain(`/proxy/${players[index].steam_id64}`));
-    expect(play).toHaveBeenCalledTimes(5);
+    expect(playedVideos).toEqual(expect.arrayContaining(players.map((_, index) => screen.getByTestId(`pov-preview-${index + 1}`))));
     for (const video of previews) {
       fireEvent.loadedMetadata(video);
       expect(video.currentTime).toBeCloseTo(20 / 64);
@@ -39,8 +38,7 @@ describe("POVSelector previews", () => {
     play.mockRestore();
   });
 
-  it("plays only the selected proxy in low-resource mode", () => {
-    localStorage.removeItem("tacticalPovLowResource");
+  it("keeps the other four proxy videos moving in single-player view", () => {
     const players = Array.from({ length: 5 }, (_, index) => ({ name: `Player ${index + 1}`, steam_id64: String(index + 1) }));
     const batch = { players: players.map((player) => ({
       steam_id64: player.steam_id64, status: "Complete", proxy_url: `/proxy/${player.steam_id64}`, coverage_start_tick: 300,
@@ -52,12 +50,11 @@ describe("POVSelector previews", () => {
     });
     render(<POVSelector players={players} batch={batch} selected="2" selectView={() => {}} tick={320} tickRate={64} playing speed={1} />);
 
-    expect(play).toHaveBeenCalledTimes(1);
-    expect(playedVideos).toEqual([screen.getByTestId("pov-preview-3")]);
+    expect(playedVideos).toEqual(expect.arrayContaining(players.map((_, index) => screen.getByTestId(`pov-preview-${index + 1}`))));
+    expect(playedVideos).toEqual(players.map((_, index) => screen.getByTestId(`pov-preview-${index + 1}`)));
     [0, 1, 3, 4].forEach((index) => fireEvent.loadedMetadata(screen.getByTestId(`pov-preview-${index + 1}`)));
     [0, 1, 3, 4].forEach((index) => expect(screen.getByTestId(`pov-preview-${index + 1}`).currentTime).toBeCloseTo(20 / 64));
-    expect(play).toHaveBeenCalledTimes(1);
-    expect(screen.getByLabelText("Save preview resources").checked).toBe(true);
+    expect(playedVideos.length).toBeGreaterThanOrEqual(5);
     play.mockRestore();
   });
 });

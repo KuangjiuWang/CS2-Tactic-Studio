@@ -75,6 +75,7 @@ export function createDesktopUpdateCheck(onStatus) {
       latest_version: latest,
       release_notes: notes,
       update_mode: updateMode,
+      manual_url: typeof update.rawJson?.manual_url === "string" ? update.rawJson.manual_url : "",
     };
     emit({ status: "available", ...base });
 
@@ -86,6 +87,16 @@ export function createDesktopUpdateCheck(onStatus) {
         // ignore
       }
       emit({ status: "cancelled", ...base });
+      return;
+    }
+
+    if (base.manual_url) {
+      try {
+        await desktopBridge?.openExternal(base.manual_url);
+        emit({ status: "manual-opened", ...base });
+      } catch (error) {
+        emit({ status: "error", ...base, error: String(error?.message || error) });
+      }
       return;
     }
 

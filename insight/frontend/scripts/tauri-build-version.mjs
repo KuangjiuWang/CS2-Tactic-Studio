@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,7 +24,7 @@ const buildEnv = {
 // `tauri signer generate`. The default key uses an empty password, which
 // PowerShell cannot express as an env var ($env:X = "" deletes it), so wire
 // both variables here where empty values survive.
-const defaultUpdaterKey = join(homedir(), ".tauri", "cs2-insight-agent.key");
+const defaultUpdaterKey = join(homedir(), ".tauri", "cs2-tactic-studio.key");
 if (!buildEnv.TAURI_SIGNING_PRIVATE_KEY && existsSync(defaultUpdaterKey)) {
   buildEnv.TAURI_SIGNING_PRIVATE_KEY = defaultUpdaterKey;
 }
@@ -64,8 +64,8 @@ run(
 const tauri = join(frontendRoot, "node_modules", "@tauri-apps", "cli", "tauri.js");
 const buildConfig = { version };
 const hasUpdaterSigningKey = Boolean(buildEnv.TAURI_SIGNING_PRIVATE_KEY);
+buildConfig.bundle = { createUpdaterArtifacts: hasUpdaterSigningKey };
 if (!hasUpdaterSigningKey) {
-  buildConfig.bundle = { createUpdaterArtifacts: false };
   console.warn("[desktop] updater private key not found — building an unsigned local installer");
 }
 const certificateThumbprint = buildEnv.CS2_INSIGHT_WINDOWS_CERTIFICATE_THUMBPRINT?.replaceAll(/\s/g, "");
@@ -123,6 +123,29 @@ if (process.platform === "win32") {
   }
   if (!existsSync(artifact)) {
     throw new Error(`Tauri NSIS artifact was not created: ${artifact}`);
+  }
+  if (hasUpdaterSigningKey) {
+    if (!existsSync(updaterSignature)) {
+      throw new Error(`Signed release is missing its updater signature: ${updaterSignature}`);
+    }
+    const releaseName = `CS2.Tactic.Studio_${version}_x64-setup.exe`;
+    const releaseAsset = join(dirname(artifact), releaseName);
+    copyFileSync(artifact, releaseAsset);
+    copyFileSync(updaterSignature, `${releaseAsset}.sig`);
+    const manifest = {
+      version,
+      notes: buildEnv.RELEASE_NOTES || "",
+      pub_date: new Date().toISOString(),
+      update_mode: "normal",
+      platforms: {
+        "windows-x86_64": {
+          signature: readFileSync(updaterSignature, "utf8").trim(),
+          url: `https://github.com/KuangjiuWang/CS2-Tactic-Studio/releases/download/v${version}/${releaseName}`,
+        },
+      },
+    };
+    writeFileSync(join(dirname(artifact), "latest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+    console.log(`[desktop] staged signed updater assets: ${releaseName}, ${releaseName}.sig, latest.json`);
   }
   console.log(`[desktop] validated Windows runtime bundle: ${artifact}`);
 }

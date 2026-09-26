@@ -4,7 +4,7 @@ import TacticTimeline from "./TacticTimeline";
 import { clock } from "./viewerEvents";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, Maximize2, Pause, Play, Plus, Save, Volume2, VolumeX } from "lucide-react";
+import { ArrowLeft, Maximize2, Minimize2, Pause, Play, Plus, Save, Volume2, VolumeX } from "lucide-react";
 import API, { API_BASE_URL } from "../../api/api";
 import { desktopBridge } from "../../desktop/desktopBridge.js";
 import { useAppShell } from "../../context/AppShellContext";
@@ -36,6 +36,7 @@ function Viewer({ initialTactic = null }) {
   const [preparing, setPreparing] = useState(false);
   const [autoSaveState, setAutoSaveState] = useState({ status: "idle", batchId: null, error: "" });
   const [multiView, setMultiView] = useState(false);
+  const [povExpanded, setPovExpanded] = useState(false);
   const [relinkingDemo, setRelinkingDemo] = useState(false);
   const [sourceDemoAvailable, setSourceDemoAvailable] = useState(initialTactic?.source_demo_available !== false);
   const prepareLock = useRef(false);
@@ -60,7 +61,14 @@ function Viewer({ initialTactic = null }) {
   const [annotationRedo, setAnnotationRedo] = useState([]);
   useEffect(() => { setAnnotationUndo([]); setAnnotationRedo([]); }, [selectedStepId]);
   const videoRef = useRef(null);
-  const stageRef = useRef(null);
+  useEffect(() => {
+    if (!povExpanded) return undefined;
+    const leaveOnEscape = (event) => {
+      if (event.key === "Escape") setPovExpanded(false);
+    };
+    document.addEventListener("keydown", leaveOnEscape);
+    return () => document.removeEventListener("keydown", leaveOnEscape);
+  }, [povExpanded]);
   const activeRound = useMemo(() => rounds.find((row) => Number(row.round_number) === Number(roundNumber)) || rounds[0], [rounds, roundNumber]);
   const actualRound = Number(activeRound?.round_number || 0);
   const teamKey = activeRound?.team_a_side === side ? "a" : activeRound?.team_b_side === side ? "b" : null;
@@ -129,6 +137,7 @@ function Viewer({ initialTactic = null }) {
     setAutoSaveState({ status: "idle", batchId: null, error: "" });
     setError("");
     setMultiView(false);
+    setPovExpanded(false);
   };
 
   const createDraftTactic = async (fallbackName = defaultTacticName) => {
@@ -377,7 +386,7 @@ function Viewer({ initialTactic = null }) {
   const selectView = (next) => {
     if (selected === "2d") setReplaySeek(null);
     setSelected(next);
-    if (next === "2d") { setReplaySeek(tick); setMultiView(false); }
+    if (next === "2d") { setReplaySeek(tick); setMultiView(false); setPovExpanded(false); }
   };
 
   const selectedIndex = Number(selected);
@@ -494,8 +503,9 @@ function Viewer({ initialTactic = null }) {
     {batch?.status === "Failed" && <div role="alert" className="tactical-error">{batch.error || batch.players?.filter((item) => item.status === "Failed").map((item) => `${item.player_name}: ${item.error}`).join("；") || (t("playbook.viewer6"))}</div>}
     <div className={`tactical-body ${multiView ? "is-multiview" : ""}`}>
       {!multiView && <POVSelector players={players} batch={batch} selected={selected} selectView={selectView} tick={tick} tickRate={tickRate} playing={playing} speed={speed} />}
-      <main className={`tactical-stage ${selected === "2d" ? "is-2d" : ""} ${multiView ? "is-multiview" : ""}`} ref={stageRef}>
+      <main className={`tactical-stage ${selected === "2d" ? "is-2d" : ""} ${multiView ? "is-multiview" : ""} ${povExpanded ? "is-pov-expanded" : ""}`}>
         <div className="tactical-video-pane">
+          {povExpanded && <button type="button" className="tactical-exit-expanded" data-testid="pov-fullscreen-exit" aria-label={t("playbook.exitFullscreen")} title={t("playbook.exitFullscreen")} onClick={() => setPovExpanded(false)}><Minimize2 size={18} />{t("playbook.exitFullscreen")}</button>}
           <div className="tactical-view-modes" role="group" aria-label={t("playbook.viewMode")}>
             <button type="button" aria-pressed={!multiView} onClick={() => setMultiView(false)}>{t("playbook.view.single")}</button>
             <button type="button" data-testid="toggle-multiview" aria-pressed={multiView} onClick={() => setMultiView(true)} disabled={!batch?.players?.length}>{t("playbook.view.grid")}</button>
@@ -520,7 +530,7 @@ function Viewer({ initialTactic = null }) {
         <div className="tactical-control-spacer" />
         <span className="tactical-batch-status">{batch?.status || t("playbook.waiting")} · {t("playbook.tick")} {Math.round(tick)}</span>
         {!multiView && <label className="tactical-quality"><input type="checkbox" checked={fullQuality} onChange={(event) => setFullQuality(event.target.checked)} />{t("playbook.viewer15")}</label>}
-        <button type="button" aria-label={t("playbook.fullscreen")} className="tactical-icon-button" onClick={() => { if (document.fullscreenElement) void document.exitFullscreen(); else void stageRef.current?.requestFullscreen?.(); }}><Maximize2 size={16} /></button>
+        {selected !== "2d" && <button type="button" aria-label={povExpanded ? t("playbook.exitFullscreen") : t("playbook.fullscreen")} className="tactical-icon-button" onClick={() => setPovExpanded((current) => !current)}>{povExpanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>}
       </div>
       <div className="tactical-stepbar"><div className="tactical-stepbar-label">{t("playbook.viewer16")}</div><button type="button" className="tactical-step-nav" aria-label={t("playbook.step.previous")} title={t("playbook.step.previous")} disabled={!hasPreviousStep} onClick={() => jumpToAdjacentStep(-1)}>‹</button><button type="button" className="tactical-step-nav" aria-label={t("playbook.step.next")} title={t("playbook.step.next")} disabled={!hasNextStep} onClick={() => jumpToAdjacentStep(1)}>›</button>{orderedSteps.map((step) => <button type="button" key={step.id} onClick={() => { setSelectedStepId(step.id); setStepTitle(step.title); setStepNote(step.note); seekToTick(step.tick); }} className={`tactical-step-chip ${selectedStepId === step.id ? "is-selected" : ""}`}>Step {step.step_number}<span>{step.title}</span></button>)}<button type="button" onClick={() => void captureStep()} disabled={!savedTactic} className="tactical-add-step"><Plus size={14} />{t("playbook.viewer17")}</button><div className="tactical-control-spacer" /><input aria-label="Tactic name" value={tacticName} onChange={(event) => setTacticName(event.target.value)} placeholder={t("playbook.viewer18")} className="tactical-name-input" /><button type="button" className="tactical-save-button" onClick={() => void saveTactic()}><Save size={14} />{t("playbook.viewer19")}</button></div>
       <TacticTimeline startTick={startTick} endTick={endTick} tickRate={tickRate} tick={tick} visibleEvents={visibleEvents} workspace={workspace} activeRound={activeRound} seekToTick={seekToTick} />

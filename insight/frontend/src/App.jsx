@@ -1065,7 +1065,7 @@ export default function App() {
     updateControllerRef.current?.cancel();
   }, [updateInfo?.update_mode]);
 
-  /** Cloudflare R2 + Tauri updater（不走 GitHub /api/app/update-info） */
+  /** Signed GitHub Release updates, with a manual path for older unsigned releases. */
   const fetchUpdateInfo = useCallback(
     async (opts = { manual: false, awaitDismiss: false }) => {
       const manual = Boolean(opts.manual);
@@ -1117,6 +1117,7 @@ export default function App() {
           latest_version: incomingLatest || prev?.latest_version || null,
           release_notes: incomingNotes || prev?.release_notes || "",
           update_mode: incomingMode || prev?.update_mode || "normal",
+          manual_url: statusPayload?.manual_url || prev?.manual_url || "",
           progress: statusPayload?.progress || null,
           error:
             statusPayload?.error === "dev-mode"
@@ -1136,7 +1137,7 @@ export default function App() {
           return;
         }
 
-        if (status === "available" || status === "downloading" || status === "downloaded") {
+        if (status === "available" || status === "downloading" || status === "downloaded" || status === "manual-opened") {
           if (status === "available") void markUpdateChecked();
           setUpdateModalManual(isManual);
           setUpdateModalOpen(true);

@@ -6,7 +6,7 @@ import TacticalPlaybookPage from "./TacticalViewer";
 import TacticalPlaybookLibrary from "./TacticalPlaybookPage";
 import API from "../../api/api";
 
-const desktopBridgeMock = vi.hoisted(() => ({ showOpenDialog: vi.fn() }));
+const desktopBridgeMock = vi.hoisted(() => ({ showOpenDialog: vi.fn(), saveTacticPackage: vi.fn(), showItemInFolder: vi.fn() }));
 
 vi.mock("../../api/api", () => ({
   API_BASE_URL: "",
@@ -40,6 +40,8 @@ describe("TacticalPlaybookPage", () => {
     API.put.mockReset().mockResolvedValue({ data: { ok: true } });
     API.patch.mockReset();
     desktopBridgeMock.showOpenDialog.mockReset();
+    desktopBridgeMock.saveTacticPackage.mockReset();
+    desktopBridgeMock.showItemInFolder.mockReset();
   });
 
   const show = () => render(<MemoryRouter><AppShellProvider value={{
@@ -57,6 +59,17 @@ describe("TacticalPlaybookPage", () => {
   const showLibrary = () => render(<MemoryRouter><AppShellProvider value={{
     analysisWorkspace: null, uploadedDemos: [], currentMatchIndex: 0,
   }}><TacticalPlaybookLibrary /></AppShellProvider></MemoryRouter>);
+
+  it("expands the POV to the app window and provides an exit control", () => {
+    show();
+    fireEvent.click(screen.getByRole("button", { name: /Fullscreen|全屏/ }));
+    expect(document.querySelector(".tactical-stage.is-pov-expanded")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("pov-fullscreen-exit"));
+    expect(document.querySelector(".tactical-stage.is-pov-expanded")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Fullscreen|全屏/ }));
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(document.querySelector(".tactical-stage.is-pov-expanded")).toBeNull();
+  });
 
   it("shows background recording failures without selecting a player and allows retry", async () => {
     API.post.mockResolvedValueOnce({ data: { id: "draft", name: "Mirage T", metadata: {} } })
@@ -308,21 +321,27 @@ describe("TacticalPlaybookPage", () => {
     confirm.mockRestore();
   });
 
-  it("downloads the streaming .cstactic export without loading media into the page", async () => {
+  it("saves a .cstactic export through the desktop dialog and shows where it went", async () => {
     API.get.mockResolvedValue({ data: { folders: [], tactics: [{
       id: "share-me", name: "Mirage T", map_name: "de_mirage", side: "T", round_number: 3,
       metadata: {}, pov_status: "ready", pov_count: 5,
     }] } });
-    let clickedAnchor;
-    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function () { clickedAnchor = this; });
+    desktopBridgeMock.saveTacticPackage.mockResolvedValue("C:/exports/Mirage T.cstactic");
     showLibrary();
     fireEvent.click(await screen.findByRole("button", { name: /Actions Mirage T|操作 Mirage T/ }));
     fireEvent.click(screen.getByRole("button", { name: /Export Tactic|导出战术/ }));
-    expect(click).toHaveBeenCalledOnce();
-    expect(clickedAnchor.href).toContain("/api/tactical/tactics/share-me/export");
-    expect(clickedAnchor.download).toBe("Mirage T.cstactic");
+    await waitFor(() => expect(desktopBridgeMock.saveTacticPackage).toHaveBeenCalledWith("share-me", "Mirage T.cstactic", expect.any(String)));
+    expect(await screen.findByText(/C:\/exports\/Mirage T\.cstactic/)).toBeTruthy();
     expect(API.get).toHaveBeenCalledTimes(1);
-    click.mockRestore();
+  });
+
+  it("shows packaging failures when sharing instead of silently doing nothing", async () => {
+    API.get.mockResolvedValue({ data: { folders: [], tactics: [{ id: "share-me", name: "Mirage T", map_name: "de_mirage", side: "T", round_number: 3, metadata: {} }] } });
+    desktopBridgeMock.saveTacticPackage.mockRejectedValue("player 2 full-quality POV video is missing");
+    showLibrary();
+    fireEvent.click(await screen.findByRole("button", { name: /Actions Mirage T|操作 Mirage T/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Share|分享/ }));
+    expect((await screen.findByRole("alert")).textContent).toContain("player 2 full-quality POV video is missing");
   });
 
   it("uploads a .cstactic package as multipart data while retaining JSON import", async () => {

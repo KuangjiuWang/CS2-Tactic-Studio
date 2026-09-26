@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { PanelLeft, Plus, Upload } from "lucide-react";
 import API, { API_BASE_URL } from "../../api/api";
+import { desktopBridge } from "../../desktop/desktopBridge.js";
 import { useT } from "../../i18n/useT";
 import FolderTree from "./FolderTree";
 import PlaybookFilters from "./PlaybookFilters";
@@ -10,7 +11,7 @@ import PlaybookDialog from "./PlaybookDialog";
 import { filterTactics, folderIds, folderPath } from "./libraryModel";
 import "./playbookLibrary.css";
 
-const errorText = (error) => typeof error?.response?.data?.detail === "string" ? error.response.data.detail : error.message;
+const errorText = (error) => typeof error?.response?.data?.detail === "string" ? error.response.data.detail : String(error?.message || error);
 export default function TacticalPlaybookPage() {
   const t = useT(), navigate = useNavigate(), { folderId } = useParams();
   const [params, setParams] = useSearchParams();
@@ -19,6 +20,8 @@ export default function TacticalPlaybookPage() {
   const [loading, setLoading] = useState(true);
   const [dialog, setDialog] = useState(null), [busy, setBusy] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const [exportingId, setExportingId] = useState(null);
+  const [exportResult, setExportResult] = useState(null);
   const fileRef = useRef(null);
   const filterKeys = ["search", "map", "side", "pov", "category", "site", "utility", "result", "sort"];
   const filters = Object.fromEntries(filterKeys.map((key) => [key, params.get(key) || (key === "sort" ? "updated" : "")]));
@@ -39,15 +42,32 @@ export default function TacticalPlaybookPage() {
   const visible = filterTactics(tree.tactics, { ...filters, folder: folderId });
   const open = (id) => navigate(`/tactics/${id}`);
   const run = async (operation) => { setError(""); try { await operation(); await refresh(); } catch (err) { setError(errorText(err)); } };
-  const exportTactic = (item) => {
-    const anchor = document.createElement("a");
-    anchor.href = `${API_BASE_URL}/api/tactical/tactics/${encodeURIComponent(item.id)}/export`;
-    anchor.download = `${item.name.replace(/[<>:"/\\|?*]/g, "_")}.cstactic`;
-    anchor.click();
+  const exportTactic = async (item, forSharing = false) => {
+    if (exportingId) return;
+    setError("");
+    setExportResult(null);
+    setExportingId(item.id);
+    try {
+      const name = `${item.name.replace(/[<>:"/\\|?*]/g, "_").trim() || "tactic"}.cstactic`;
+      if (desktopBridge?.saveTacticPackage) {
+        const path = await desktopBridge.saveTacticPackage(item.id, name, t(forSharing ? "playbook.share" : "playbook.export"));
+        if (path) setExportResult({ path, forSharing });
+      } else {
+        const anchor = document.createElement("a");
+        anchor.href = `${API_BASE_URL}/api/tactical/tactics/${encodeURIComponent(item.id)}/export`;
+        anchor.download = name;
+        anchor.click();
+        setExportResult({ path: "", forSharing });
+      }
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setExportingId(null);
+    }
   };
   const action = (key, item) => {
     if (key === "open") return open(item.id);
-    if (key === "export" || key === "share") return exportTactic(item);
+    if (key === "export" || key === "share") return void exportTactic(item, key === "share");
     if (key === "removeFromFolder") return void run(() => API.put(`/tactical/tactics/${item.id}/folders`, { folder_ids: folderIds(item).filter((id) => id !== folderId) }));
     if (key === "duplicate") return void run(async () => {
       const { data } = await API.get(`/tactical/tactics/${item.id}`);
@@ -85,6 +105,8 @@ export default function TacticalPlaybookPage() {
         await API.post("/tactical/import", JSON.parse(await file.text()));
       }); }} />
       <PlaybookFilters filters={filters} change={change} />
+      {exportingId && <div className="playbook-export-status" role="status">{t("playbook.exporting")}</div>}
+      {exportResult && <div className="playbook-export-status" role="status"><span>{t(exportResult.path ? exportResult.forSharing ? "playbook.shareReady" : "playbook.exportSaved" : "playbook.downloadStarted", { path: exportResult.path })}</span>{exportResult.path && <button type="button" onClick={() => void desktopBridge?.showItemInFolder?.(exportResult.path)}>{t("playbook.openFolder")}</button>}</div>}
       {error && <div className="playbook-error" role="alert">{error}<button onClick={() => void run(refresh)}>{t("playbook.retry")}</button></div>}
       {folderId && !selectedFolder && !loading ? <div className="playbook-empty"><p>{t("playbook.folderMissing")}</p><button onClick={() => select(null)}>{t("playbook.all")}</button></div>
         : loading ? <div className="playbook-empty" role="status">{t("playbook.loading")}</div>
