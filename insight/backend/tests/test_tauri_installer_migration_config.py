@@ -8,13 +8,13 @@ TAURI_BUILD_SCRIPT = REPO_ROOT / "frontend" / "scripts" / "tauri-build-version.m
 TAURI_RUNTIME = TAURI_ROOT / "src" / "lib.rs"
 
 
-def test_derivative_identifier_does_not_claim_upstream_or_run_migration_hook():
+def test_derivative_identifier_stays_scoped_and_uses_legacy_upgrade_hook():
     config = json.loads((TAURI_ROOT / "tauri.conf.json").read_text(encoding="utf-8"))
 
     assert config["identifier"] == "local.cs2tacticstudio.app"
     assert config["productName"] == "CS2 Tactic Studio"
     assert config["build"]["beforeBuildCommand"] == "node node_modules/vite/bin/vite.js build"
-    assert "installerHooks" not in config["bundle"]["windows"]["nsis"]
+    assert config["bundle"]["windows"]["nsis"]["installerHooks"] == "./windows/upgrade-hooks.nsh"
     assert not config["bundle"]["createUpdaterArtifacts"]
     assert "plugins" not in config or "updater" not in config["plugins"]
 
