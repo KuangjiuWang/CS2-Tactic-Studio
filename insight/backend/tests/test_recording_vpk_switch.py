@@ -14,9 +14,10 @@ from app.recording.executor import obs_recording_controller
 
 
 @pytest.mark.parametrize("pov_enabled", [True, False])
+@pytest.mark.parametrize("advanced_playback_enabled", [True, False])
 @pytest.mark.parametrize("failure", [None, "restore", "install"])
 def test_queue_restores_before_next_demo_and_never_launches_failed_package(
-    monkeypatch, tmp_path, pov_enabled, failure,
+    monkeypatch, tmp_path, pov_enabled, advanced_playback_enabled, failure,
 ):
     events = []
     installed = []
@@ -72,7 +73,8 @@ def test_queue_restores_before_next_demo_and_never_launches_failed_package(
         for index, name in enumerate(["de_dust2", "de_mirage"])
     ]
     operation = director.execute_plan_queue(requests, warmup=RecordingWarmupExtras(
-        pov_hud_enabled=pov_enabled, recording_hud_enabled=True, pov_voice_mode="all",
+        pov_hud_enabled=pov_enabled, advanced_playback_enabled=advanced_playback_enabled,
+        recording_hud_enabled=True, pov_voice_mode="all",
     ))
     if failure:
         with pytest.raises(PovHudError, match="de_mirage.dem"):
@@ -91,6 +93,7 @@ def test_queue_restores_before_next_demo_and_never_launches_failed_package(
         assert kwargs["voice_mode"] == "all"
         assert kwargs["require_demo_hud"] is True
         assert kwargs["pov_visuals_enabled"] is pov_enabled
+        assert kwargs["advanced_playback_enabled"] is advanced_playback_enabled
 
 
 @pytest.mark.parametrize("pov_enabled", [True, False])

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AppShellProvider } from "../../context/AppShellContext";
 import TacticalPlaybookPage from "./TacticalViewer";
+import TacticalPlaybookLibrary from "./TacticalPlaybookPage";
 import API from "../../api/api";
 
 const desktopBridgeMock = vi.hoisted(() => ({ showOpenDialog: vi.fn() }));
@@ -52,6 +53,10 @@ describe("TacticalPlaybookPage", () => {
     uploadedDemos: [],
     currentMatchIndex: 0,
   }}><Routes><Route path="/tactics/:tacticId" element={<TacticalPlaybookPage />} /></Routes></AppShellProvider></MemoryRouter>);
+
+  const showLibrary = () => render(<MemoryRouter><AppShellProvider value={{
+    analysisWorkspace: null, uploadedDemos: [], currentMatchIndex: 0,
+  }}><TacticalPlaybookLibrary /></AppShellProvider></MemoryRouter>);
 
   it("shows background recording failures without selecting a player and allows retry", async () => {
     API.post.mockResolvedValueOnce({ data: { id: "draft", name: "Mirage T", metadata: {} } })
@@ -119,6 +124,7 @@ describe("TacticalPlaybookPage", () => {
   it("defaults to OBS and sends HLAE only when the alternate renderer is selected", async () => {
     show();
     expect(screen.getByTestId("record-mode-obs").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("record-mode-advanced-obs").getAttribute("aria-pressed")).toBe("false");
     expect(screen.getByTestId("record-mode-hlae").getAttribute("aria-pressed")).toBe("false");
     fireEvent.click(screen.getByTestId("record-mode-hlae"));
     expect(screen.getByTestId("record-mode-hlae").getAttribute("aria-pressed")).toBe("true");
@@ -128,6 +134,20 @@ describe("TacticalPlaybookPage", () => {
     await waitFor(() => expect(API.post).toHaveBeenCalled());
     expect(API.post.mock.calls[1][0]).toBe("/tactical/prepare-povs");
     expect(API.post.mock.calls[1][1]).toMatchObject({ recording_mode: "hlae", tactic_id: "draft" });
+  });
+
+  it("sends advanced Demo OBS as a separate five-POV recording mode", async () => {
+    show();
+    const advancedMode = screen.getByTestId("record-mode-advanced-obs");
+    expect(advancedMode.getAttribute("aria-label")).toMatch(/高级 Demo OBS 回放|Advanced Demo playback recorded by OBS|Advanced Demo OBS playback/);
+    fireEvent.click(advancedMode);
+    expect(advancedMode.getAttribute("aria-pressed")).toBe("true");
+    API.post.mockResolvedValueOnce({ data: { id: "draft", name: "Mirage T", metadata: {} } })
+      .mockResolvedValueOnce({ data: { id: "advanced-batch", status: "Failed", players: [] } });
+    fireEvent.click(screen.getByRole("button", { name: /生成五个真实 POV|Generate 5 real POVs/ }));
+    await waitFor(() => expect(API.post).toHaveBeenCalledTimes(2));
+    expect(API.post.mock.calls[1][0]).toBe("/tactical/prepare-povs");
+    expect(API.post.mock.calls[1][1]).toMatchObject({ recording_mode: "advanced_obs", tactic_id: "draft" });
   });
 
   it("switches the actual T roster after halftime and submits that round", async () => {
@@ -286,5 +306,42 @@ describe("TacticalPlaybookPage", () => {
     expect(confirm).toHaveBeenCalledOnce();
     expect(screen.queryByText(/The source demo is unavailable/)).toBeNull();
     confirm.mockRestore();
+  });
+
+  it("downloads the streaming .cstactic export without loading media into the page", async () => {
+    API.get.mockResolvedValue({ data: { folders: [], tactics: [{
+      id: "share-me", name: "Mirage T", map_name: "de_mirage", side: "T", round_number: 3,
+      metadata: {}, pov_status: "ready", pov_count: 5,
+    }] } });
+    let clickedAnchor;
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function () { clickedAnchor = this; });
+    showLibrary();
+    fireEvent.click(await screen.findByRole("button", { name: /Actions Mirage T|操作 Mirage T/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Export Tactic|导出战术/ }));
+    expect(click).toHaveBeenCalledOnce();
+    expect(clickedAnchor.href).toContain("/api/tactical/tactics/share-me/export");
+    expect(clickedAnchor.download).toBe("Mirage T.cstactic");
+    expect(API.get).toHaveBeenCalledTimes(1);
+    click.mockRestore();
+  });
+
+  it("uploads a .cstactic package as multipart data while retaining JSON import", async () => {
+    showLibrary();
+    const picker = document.querySelector('input[type="file"]');
+    const packageFile = new File(["archive bytes"], "team-tactic.cstactic", { type: "application/vnd.cs2-tactic+zip" });
+    fireEvent.change(picker, { target: { files: [packageFile] } });
+    await waitFor(() => expect(API.post).toHaveBeenCalledWith(
+      "/tactical/import-package", expect.any(FormData),
+    ));
+    const body = API.post.mock.calls[0][1];
+    expect(body.get("package").name).toBe("team-tactic.cstactic");
+
+    API.post.mockClear();
+    const legacy = new File([JSON.stringify({ format: "cs2-tactic-v1", tactic: {} })], "legacy.json", { type: "application/json" });
+    Object.defineProperty(legacy, "text", { value: async () => JSON.stringify({ format: "cs2-tactic-v1", tactic: {} }) });
+    fireEvent.change(picker, { target: { files: [legacy] } });
+    await waitFor(() => expect(API.post).toHaveBeenCalledWith(
+      "/tactical/import", { format: "cs2-tactic-v1", tactic: {} },
+    ));
   });
 });

@@ -11,7 +11,7 @@ import {
   yawToCssRotation,
 } from "./replayRadarTransform";
 import {
-  findPreviousFrameIndex,
+  findNearestFrameIndex,
   interpolateReplayFrameAtPosition,
 } from "./replayPlayback";
 import {
@@ -636,13 +636,7 @@ export default function ReplaySceneCanvas({
     const events = roundEvents;
     const nearestFrame = (tick) => {
       if (!frames.length) return null;
-      const previousIndex = findPreviousFrameIndex(frames, tick);
-      const nextIndex = Math.min(frames.length - 1, previousIndex + 1);
-      const previous = frames[previousIndex];
-      const next = frames[nextIndex];
-      return Math.abs(Number(next?.tick) - tick) < Math.abs(Number(previous?.tick) - tick)
-        ? next
-        : previous;
+      return frames[findNearestFrameIndex(frames, tick)] || null;
     };
     const kills = [];
     const grenades = [];
@@ -772,19 +766,22 @@ export default function ReplaySceneCanvas({
     return { kills, grenades };
   }, [currentTick, frames, layers.grenades, layers.kills, mapLayer, replayEndTick, roundEvents, selectedRound, teamKeyByName, tickRate, transform]);
 
+  const replayShots = useMemo(() => {
+    const workspaceShots = selectedRound?.shots || [];
+    return workspaceShots.length
+      ? workspaceShots
+      : frames.flatMap((sourceFrame) => sourceFrame.shots || []);
+  }, [frames, selectedRound?.shots]);
+
   const recentShots = useMemo(() => {
     if (!layers.shots) return [];
     const life = Math.max(1, tickRate * 0.22);
-    const workspaceShots = selectedRound?.shots || [];
-    const replayShots = workspaceShots.length
-      ? workspaceShots
-      : frames.flatMap((sourceFrame) => sourceFrame.shots || []);
     return replayShots.flatMap((shot) => {
-      const age = currentTick - Number(shot.tick || 0);
+      const shotTick = Number(shot.tick || 0);
+      if (!Number.isFinite(shotTick)) return [];
+      const age = currentTick - shotTick;
       if (age < 0 || age > life) return [];
-      const sourceFrame = frames.reduce((best, item) => (
-        Math.abs(Number(item.tick) - Number(shot.tick || 0)) < Math.abs(Number(best?.tick ?? Infinity) - Number(shot.tick || 0)) ? item : best
-      ), null);
+      const sourceFrame = frames[findNearestFrameIndex(frames, shotTick)] || null;
       const frameActor = sourceFrame?.players?.find((item) => safeLabel(item.name).toLowerCase() === safeLabel(shot.actor).toLowerCase());
       const shotSource = Number.isFinite(Number(shot.x)) ? withFallbackZ(shot, frameActor) : frameActor;
       if (!pointMatchesMapLayer(shotSource, transform, mapLayer)) return [];
@@ -795,7 +792,7 @@ export default function ReplaySceneCanvas({
       const length = 11;
       return [{ ...shot, origin, target: { x: origin.x + Math.cos(radians) * length, y: origin.y - Math.sin(radians) * length }, opacity: 1 - age / life }];
     });
-  }, [currentTick, frames, layers.shots, mapLayer, selectedRound?.shots, tickRate, transform]);
+  }, [currentTick, frames, layers.shots, mapLayer, replayShots, tickRate, transform]);
 
   const killFeed = useMemo(() => roundEvents
     .filter((event) => event.type === "kill" && Number(event.tick) <= currentTick && currentTick - Number(event.tick) <= tickRate * 7)

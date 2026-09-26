@@ -348,7 +348,7 @@ class TacticalStore:
         metadata = dict(data.get("metadata", {}))
         metadata.pop("pov_batch_id", None)  # Machine-local recordings are not portable.
         row = (uuid4().hex, None, name, str(data.get("description", "")), str(data["map_name"]), side,
-               str(data["source_demo_path"]), None, int(data["round_number"]), start, freeze, end,
+               str(data["source_demo_path"]), data.get("source_demo_hash"), int(data["round_number"]), start, freeze, end,
                json.dumps(metadata, ensure_ascii=False), _now(), _now())
         await self.initialize()
         async with aiosqlite.connect(self.path) as db:

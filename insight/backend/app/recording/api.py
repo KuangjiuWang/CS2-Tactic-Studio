@@ -711,6 +711,9 @@ async def execute_recording_queue(
         warmup_extras = dataclasses.replace(
             warmup_extras,
             pov_hud_enabled=pov_enabled,
+            advanced_playback_enabled=bool(
+                pov_hud_cfg.get("advanced_playback_enabled", False)
+            ),
             recording_hud_enabled=recording_hud_enabled,
             pov_radar_mode=int(pov_hud_cfg.get("radar_mode", 0)),
             pov_teamcounter_numeric=bool(pov_hud_cfg.get("teamcounter_numeric", False)),

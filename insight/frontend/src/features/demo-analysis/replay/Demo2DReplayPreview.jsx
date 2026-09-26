@@ -38,10 +38,7 @@ import {
 } from "./replayPlayback";
 import { useReplayStore, REPLAY_STORE_CACHE_VERSION } from "./replayStore";
 import { replayUtilityExposureByName, roundEnemyKillCounts } from "./replayHudState";
-import {
-  MAX_SMOKE_TRAJECTORY_SECONDS,
-  grenadeTrajectoryTimingIsValid,
-} from "./replayGrenadeTrajectory";
+import { replayEndTickForRound, replayEventsForRound } from "./replayRoundEvents";
 
 const SAMPLE_HZ = 32;
 const REPLAY_CACHE_VERSION = REPLAY_STORE_CACHE_VERSION;
@@ -152,110 +149,6 @@ function eventLabel(event) {
   if (event?.type === "defuse") return `${safeLabel(event.actor, "玩家")} 完成拆弹`;
   if (event?.type === "explode") return "C4 爆炸";
   return "比赛事件";
-}
-
-function grenadeLandingPoint(event) {
-  if (Number.isFinite(Number(event?.x)) && Number.isFinite(Number(event?.y))) {
-    return { x: Number(event.x), y: Number(event.y) };
-  }
-  const last = Array.isArray(event?.trajectory) ? event.trajectory.at(-1) : null;
-  return Number.isFinite(Number(last?.x)) && Number.isFinite(Number(last?.y))
-    ? { x: Number(last.x), y: Number(last.y) }
-    : null;
-}
-
-function smokeTrajectoryQuality(event, tickRate) {
-  const points = Array.isArray(event?.trajectory) ? event.trajectory : [];
-  if (points.length < 2) return 0;
-  const span = Number(points.at(-1)?.tick || 0) - Number(points[0]?.tick || 0);
-  const landing = grenadeLandingPoint(event);
-  const endpoint = points.at(-1);
-  const endpointDistance = landing && endpoint
-    ? Math.hypot(Number(endpoint.x) - landing.x, Number(endpoint.y) - landing.y)
-    : 0;
-  if (
-    !grenadeTrajectoryTimingIsValid(points, event?.tick, tickRate, true)
-    || endpointDistance > 256
-  ) return -1;
-  return points.length
-    + Math.min(span, tickRate * MAX_SMOKE_TRAJECTORY_SECONDS) / Math.max(1, tickRate);
-}
-
-function grenadeThrowTick(event, tickRate) {
-  const trajectoryStart = Array.isArray(event?.trajectory) ? Number(event.trajectory[0]?.tick || 0) : 0;
-  const parsed = Number(event?.throw_tick || trajectoryStart || 0);
-  if (parsed > 0) return parsed;
-  const isSmoke = /烟|smoke/i.test(safeLabel(event?.kind));
-  return Math.max(0, Number(event?.tick || 0) - tickRate * (isSmoke ? 2.25 : 1));
-}
-
-function replayEventsForRound(round, tickRate = 64) {
-  const startTick = Number(round?.freeze_end_tick ?? round?.start_tick ?? -Infinity);
-  const endTick = Number(round?.record_end_tick ?? round?.end_tick ?? Infinity);
-  const seen = new Set();
-  const terminalEvents = new Set();
-  const filtered = (round?.events || []).filter((event) => {
-    const tick = Number(event?.tick || 0);
-    if (Number.isFinite(startTick) && tick < startTick) return false;
-    if (Number.isFinite(endTick) && tick > endTick) return false;
-    if (["explode", "defuse"].includes(event?.type)) {
-      if (terminalEvents.has(event.type)) return false;
-      terminalEvents.add(event.type);
-    }
-    const identity = [event?.type, tick, event?.actor, event?.target, event?.kind].join("|");
-    if (seen.has(identity)) return false;
-    seen.add(identity);
-    return true;
-  });
-  const merged = [];
-  for (const event of filtered) {
-    if (event?.type !== "grenade") {
-      merged.push(event);
-      continue;
-    }
-    const eventKind = safeLabel(event.kind).toLowerCase();
-    const eventActor = safeLabel(event.actor).toLowerCase();
-    const eventThrowTick = grenadeThrowTick(event, tickRate);
-    const isSmoke = /烟|smoke/i.test(eventKind);
-    const landing = grenadeLandingPoint(event);
-    const duplicateIndex = merged.findIndex((candidate) => {
-      if (candidate?.type !== "grenade") return false;
-      if (safeLabel(candidate.kind).toLowerCase() !== eventKind) return false;
-      if (safeLabel(candidate.actor).toLowerCase() !== eventActor) return false;
-      const sameThrow = Math.abs(grenadeThrowTick(candidate, tickRate) - eventThrowTick) <= tickRate * 0.6;
-      const eventWindow = isSmoke ? tickRate * 4 : tickRate * 0.75;
-      if (!sameThrow && Math.abs(Number(candidate.tick || 0) - Number(event.tick || 0)) > eventWindow) return false;
-      const candidateLanding = grenadeLandingPoint(candidate);
-      const sameLanding = landing && candidateLanding
-        && Math.hypot(landing.x - candidateLanding.x, landing.y - candidateLanding.y) <= 96;
-      return sameThrow || sameLanding;
-    });
-    if (duplicateIndex < 0) {
-      merged.push(event);
-    } else if (smokeTrajectoryQuality(event, tickRate) > smokeTrajectoryQuality(merged[duplicateIndex], tickRate)) {
-      merged[duplicateIndex] = event;
-    }
-  }
-  return merged.sort((left, right) => Number(left.tick || 0) - Number(right.tick || 0));
-}
-
-export function replayEndTickForRound(round, rounds, workspace, tickRate = 64) {
-  const storedEnd = Number(round?.record_end_tick ?? round?.end_tick ?? round?.round_end_tick ?? 0);
-  const roundEnd = Number(round?.round_end_tick ?? round?.end_tick ?? 0);
-  const roundNumber = Number(round?.round_number || 0);
-  if (!(roundEnd > 0)) return storedEnd;
-  const nextRound = [...(rounds || [])]
-    .filter((candidate) => Number(candidate?.round_number || 0) > roundNumber)
-    .sort((left, right) => Number(left?.round_number || 0) - Number(right?.round_number || 0))[0];
-  const nextRoundStart = Number(nextRound?.start_tick || 0);
-  const demoEndTick = Number(workspace?.demo_end_tick || 0);
-  const availableEnd = nextRoundStart > 0 ? nextRoundStart - 1 : demoEndTick;
-  if (!(availableEnd > roundEnd)) return storedEnd;
-  const desiredEnd = Math.min(
-    roundEnd + Math.max(1, Math.round((Number(tickRate) || 64) * 3)),
-    availableEnd,
-  );
-  return Math.min(Math.max(storedEnd, desiredEnd), availableEnd);
 }
 
 function eventFrameRatio(event, frames, selectedRound) {

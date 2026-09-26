@@ -8,6 +8,25 @@ from app.runtime_session import runtime_session_state
 from app.features.tactical_playbook import api
 
 
+def test_advanced_demo_obs_mode_enables_the_existing_advanced_pov_pipeline():
+    selection = api.RoundSelection(
+        demo_path="match.dem",
+        analysis_workspace={},
+        round_number=1,
+        side="T",
+        recording_mode="advanced_obs",
+    )
+
+    assert selection.recording_mode == "advanced_obs"
+    assert api._pov_hud_options_for_recording_mode("obs") is None
+    assert api._pov_hud_options_for_recording_mode("advanced_obs") == {
+        "enabled": True,
+        "advanced_playback_enabled": True,
+        "radar_mode": 0,
+        "teamcounter_numeric": False,
+    }
+
+
 def test_first_pov_is_ready_while_queue_records_next(tmp_path, monkeypatch):
     asyncio.run(_first_pov_is_ready_while_queue_records_next(tmp_path, monkeypatch))
 
@@ -29,8 +48,10 @@ async def _first_pov_is_ready_while_queue_records_next(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "_make_proxy", lambda _source, dest: dest.write_bytes(b"proxy"))
     release_second = asyncio.Event()
     first_emitted = asyncio.Event()
+    queue_options = {}
 
-    async def fake_queue(_request, _unused):
+    async def fake_queue(request, _unused):
+        queue_options.update(request)
         assert runtime_session_state()["busy"]
         observer = api.recording_result_observer.get()
         first = {"request_id": "p1", "success": True, "output_path": str(source)}
@@ -46,7 +67,7 @@ async def _first_pov_is_ready_while_queue_records_next(tmp_path, monkeypatch):
         {"request": {"request_id": request_id}, "coverage_start_tick": 0, "coverage_end_tick": 640}
         for request_id in ("p1", "p2")
     ]
-    api._batches[batch_id] = {"id": batch_id, "status": "Waiting", "players": [
+    api._batches[batch_id] = {"id": batch_id, "status": "Waiting", "recording_mode": "advanced_obs", "players": [
         {"status": "Waiting"}, {"status": "Waiting"},
     ]}
     api._active_batch = batch_id
@@ -66,6 +87,7 @@ async def _first_pov_is_ready_while_queue_records_next(tmp_path, monkeypatch):
         await asyncio.wait_for(task, 3)
         api._batches.pop(batch_id, None)
     assert task.result() is None
+    assert queue_options["pov_hud"] == api._pov_hud_options_for_recording_mode("advanced_obs")
     assert not runtime_session_state()["busy"]
 
 

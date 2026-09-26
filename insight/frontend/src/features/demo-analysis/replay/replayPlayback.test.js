@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createReplayClock,
+  findNearestFrameIndex,
   findPreviousFrameIndex,
   frameBracket,
   interpolateReplayFrame,
@@ -41,6 +42,14 @@ describe("findPreviousFrameIndex / frameBracket", () => {
     expect(findPreviousFrameIndex(frames, 108)).toBe(1);
     expect(findPreviousFrameIndex(frames, 110)).toBe(1);
     expect(findPreviousFrameIndex(frames, 99)).toBe(0);
+  });
+
+  it("finds the nearest frame in logarithmic time and prefers the earlier frame on ties", () => {
+    expect(findNearestFrameIndex(frames, 99)).toBe(0);
+    expect(findNearestFrameIndex(frames, 109)).toBe(1);
+    expect(findNearestFrameIndex(frames, 112)).toBe(1);
+    expect(findNearestFrameIndex(frames, 113)).toBe(2);
+    expect(findNearestFrameIndex([], 100)).toBe(-1);
   });
 
   it("computes linear ratio between uneven ticks", () => {

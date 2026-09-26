@@ -110,6 +110,18 @@ export function findPreviousFrameIndex(frames, playheadTick, playheadSeconds = n
   return ans;
 }
 
+/** Binary-search the nearest source frame, preferring the earlier frame on ties. */
+export function findNearestFrameIndex(frames, playheadTick) {
+  if (!frames?.length) return -1;
+  const previousIndex = findPreviousFrameIndex(frames, playheadTick);
+  const nextIndex = Math.min(frames.length - 1, previousIndex + 1);
+  const target = Number(playheadTick);
+  return Math.abs(Number(frames[nextIndex]?.tick) - target)
+    < Math.abs(Number(frames[previousIndex]?.tick) - target)
+    ? nextIndex
+    : previousIndex;
+}
+
 /** Keep the 32Hz source while using fewer interpolation anchors at high speed. */
 export function replaySampleStrideForRate(rate) {
   const value = Math.max(0, Number(rate) || 1);

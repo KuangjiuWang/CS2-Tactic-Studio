@@ -1855,6 +1855,8 @@ class RecordingWarmupExtras:
     pov_voice_disabled: bool = False
     # RecordingV3 queue: enable POV HUD lifecycle (install vpk + patch gameinfo.gi)
     pov_hud_enabled: bool = False
+    # Use the advanced Demo playback VPK template during POV recording.
+    advanced_playback_enabled: bool = False
     # Build the demo-specific in-game voice/input VPK independently of POV mode.
     recording_hud_enabled: bool = False
     # Authoritative in-game input visualization. Presentation size and audio
@@ -3822,6 +3824,9 @@ class OBSDirector:
                                 map_name=demo_map_name,
                                 demo_path=demo_abs,
                                 require_demo_hud=True,
+                                advanced_playback_enabled=bool(
+                                    getattr(warmup, "advanced_playback_enabled", False)
+                                ),
                                 voice_mode=pov_voice_mode_v3,
                                 pov_visuals_enabled=pov_on_v3,
                                 skybox_id=skybox_id_v3,

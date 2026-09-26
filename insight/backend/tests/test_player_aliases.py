@@ -165,6 +165,7 @@ def test_recording_api_keeps_copy_alive_through_director_then_cleans(monkeypatch
         assert getattr(kwargs["warmup"], "recording_hud_enabled", False)
         assert kwargs["warmup"].pov_voice_mode == "enemy"
         assert kwargs["warmup"].input_hud_enabled is True
+        assert kwargs["warmup"].advanced_playback_enabled is True
         observed.append(path)
         if fail:
             raise RuntimeError("recording failed")
@@ -174,6 +175,7 @@ def test_recording_api_keeps_copy_alive_through_director_then_cleans(monkeypatch
         requests=[dto],
         pov_hud={
             "enabled": False,
+            "advanced_playback_enabled": True,
             "voice_mode": "enemy",
             "input_hud_enabled": True,
         },

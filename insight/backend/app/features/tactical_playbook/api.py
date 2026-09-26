@@ -6,6 +6,9 @@ import asyncio
 import json
 import logging
 import os
+import shutil
+import tempfile
+import zipfile
 from contextlib import AsyncExitStack
 from fractions import Fraction
 import subprocess
@@ -13,9 +16,10 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from ...env_utils import get_data_dir
 from ...env_utils import load_config
@@ -28,6 +32,7 @@ from ...obs_bootstrap import bootstrap_obs_environment, ObsBootstrapRequest
 from ...video_composer import MontageComposerError, resolve_ffmpeg_binary, resolve_ffprobe_binary
 from .rounds import TacticalRoundError, build_five_pov_jobs, select_round
 from .hlae_capture import HLAECaptureError, run_hlae_capture, validate_hlae_installation
+from .portable import extract_package, write_package
 from .storage import TacticalStore
 
 router = APIRouter(prefix="/api/tactical", tags=["tactical-playbook"])
@@ -85,8 +90,21 @@ class RoundSelection(BaseModel):
     analysis_workspace: dict
     round_number: int
     side: str
-    recording_mode: Literal["obs", "hlae"] = "obs"
+    recording_mode: Literal["obs", "advanced_obs", "hlae"] = "obs"
     tactic_id: str | None = None
+
+
+def _pov_hud_options_for_recording_mode(recording_mode: str) -> dict | None:
+    if recording_mode == "advanced_obs":
+        # Match the existing advanced Demo playback path while retaining the
+        # five-POV OBS queue's recording, progress, and verification lifecycle.
+        return {
+            "enabled": True,
+            "advanced_playback_enabled": True,
+            "radar_mode": 0,
+            "teamcounter_numeric": False,
+        }
+    return None
 
 
 def _canonical_demo_path(path: str) -> str:
@@ -389,7 +407,13 @@ async def _run_batch(
         progress_token = recording_progress_observer.set(on_progress)
         verify_token = require_verified_pov.set(True)
         try:
-            results = await execute_recording_queue(QueueRecordingRequest(requests=requests), None)
+            queue_request = QueueRecordingRequest(
+                requests=requests,
+                pov_hud=_pov_hud_options_for_recording_mode(
+                    state.get("recording_mode", "obs")
+                ),
+            )
+            results = await execute_recording_queue(queue_request, None)
         finally:
             recording_result_observer.reset(observer_token)
             recording_progress_observer.reset(progress_token)
@@ -676,6 +700,148 @@ async def get_tactic(tactic_id: str):
         raise HTTPException(404, "tactic not found")
     tactic["source_demo_available"] = Path(tactic["source_demo_path"]).is_file()
     return tactic
+
+
+def _remove_export_file(path: str) -> None:
+    Path(path).unlink(missing_ok=True)
+
+
+@router.get("/tactics/{tactic_id}/export")
+async def export_tactic_package(tactic_id: str):
+    tactic = await TacticalStore().get_tactic(tactic_id)
+    if tactic is None:
+        raise HTTPException(404, "tactic not found")
+    batch = None
+    batch_id = (tactic.get("metadata") or {}).get("pov_batch_id")
+    if batch_id:
+        try:
+            batch = _get_batch(batch_id)
+        except (HTTPException, OSError, ValueError, json.JSONDecodeError) as exc:
+            raise HTTPException(409, "the linked POV batch cannot be read; repair it before exporting") from exc
+        if batch is None:
+            raise HTTPException(409, "the linked POV batch is missing; repair it before exporting")
+
+    export_dir = get_data_dir() / "tactical-exports"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    descriptor, output_path = tempfile.mkstemp(prefix="tactic-", suffix=".cstactic", dir=export_dir)
+    os.close(descriptor)
+    try:
+        await asyncio.to_thread(
+            write_package, Path(output_path), tactic, batch, get_data_dir() / "tactical-povs",
+        )
+    except (OSError, ValueError) as exc:
+        _remove_export_file(output_path)
+        raise HTTPException(409, "could not export this tactic: " + str(exc)) from exc
+    safe_name = "".join("_" if character in '<>:"/\\|?*' else character for character in tactic["name"]).strip(" .")
+    safe_name = (safe_name or "tactic")[:120]
+    return FileResponse(
+        output_path, media_type="application/vnd.cs2-tactic+zip",
+        filename=f"{safe_name}.cstactic", background=BackgroundTask(_remove_export_file, output_path),
+    )
+
+
+@router.post("/import-package")
+async def import_tactic_package(package: UploadFile = File(...)):
+    if Path(package.filename or "").suffix.casefold() != ".cstactic":
+        await package.close()
+        raise HTTPException(422, "select a .cstactic package")
+    pov_root = get_data_dir() / "tactical-povs"
+    pov_root.mkdir(parents=True, exist_ok=True)
+    batch_id = uuid4().hex
+    staging = pov_root / f".{batch_id}.importing"
+    final_dir = pov_root / batch_id
+    store = TacticalStore()
+    tactic_id = None
+    succeeded = False
+    try:
+        await package.seek(0)
+        try:
+            manifest = await asyncio.to_thread(extract_package, package.file, staging)
+        except (ValueError, OSError, zipfile.BadZipFile) as exc:
+            raise HTTPException(422, "Invalid tactical package: " + str(exc)) from exc
+
+        portable_tactic = manifest["tactic"]
+        local_demo_path = final_dir / "source.dem"
+        tactic_data = dict(portable_tactic)
+        tactic_data["source_demo_path"] = str(local_demo_path)
+        demo_asset = manifest["assets"]["source_demo"]
+        tactic_data["source_demo_hash"] = (
+            demo_asset["sha256"] if demo_asset else portable_tactic.get("source_demo_hash")
+        )
+        metadata = dict(tactic_data.get("metadata") or {})
+        workspace = metadata.get("analysis_workspace")
+        if isinstance(workspace, dict):
+            workspace = dict(workspace)
+            workspace["demo_path"] = str(local_demo_path)
+            metadata["analysis_workspace"] = workspace
+        tactic_data["metadata"] = metadata
+
+        os.replace(staging, final_dir)
+        tactic = await store.import_tactic(tactic_data)
+        tactic_id = tactic["id"]
+        recording = manifest.get("recording")
+        if recording is not None:
+            state_players = []
+            exported_players = recording["players"]
+            for index, exported in enumerate(exported_players):
+                media = manifest["assets"]["players"][index]
+                video_path = final_dir / f"player{index + 1}.mp4" if media["video"] else None
+                proxy_path = final_dir / f"player{index + 1}-proxy.mp4" if media["proxy"] else video_path
+                complete = video_path is not None
+                player = {
+                    "player_name": str(exported.get("player_name") or ""),
+                    "steam_id64": str(exported.get("steam_id64") or ""),
+                    "coverage_start_tick": int(exported.get("coverage_start_tick") or 0),
+                    "coverage_end_tick": int(exported.get("coverage_end_tick") or 0),
+                    "start_tick": int(exported.get("coverage_start_tick") or 0),
+                    "end_tick": int(exported.get("coverage_end_tick") or 0),
+                    "status": "Complete" if complete else "Failed",
+                    "video_path": str(video_path) if video_path else None,
+                    "proxy_path": str(proxy_path) if proxy_path else None,
+                    "stream_url": f"/api/tactical/povs/{batch_id}/{index + 1}/video",
+                    "proxy_url": f"/api/tactical/povs/{batch_id}/{index + 1}/proxy",
+                    "attempt": 1,
+                }
+                for field in ("duration", "fps", "has_audio", "height"):
+                    if field in exported:
+                        player[field] = exported[field]
+                if not complete:
+                    player["error"] = "Full-quality POV video was not included in this package."
+                state_players.append(player)
+            batch_state = {
+                "id": batch_id,
+                "status": "Complete" if all(player["status"] == "Complete" for player in state_players) else "Failed",
+                "round_number": int(tactic_data["round_number"]),
+                "side": str(tactic_data["side"]).upper(),
+                "demo_path": str(local_demo_path),
+                "tick_rate": recording.get("tick_rate"),
+                "recording_mode": str(recording.get("recording_mode") or "obs"),
+                "tactic_id": tactic_id,
+                "players": state_players,
+            }
+            _persist_batch(batch_state)
+            await store.update_recording(tactic_id, batch_id)
+            _batches[batch_id] = batch_state
+        tactic = await store.get_tactic(tactic_id)
+        tactic["source_demo_available"] = local_demo_path.is_file()
+        succeeded = True
+        return tactic
+    except HTTPException:
+        raise
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        raise HTTPException(422, "Invalid tactical package: " + str(exc)) from exc
+    finally:
+        await package.close()
+        if not succeeded and tactic_id:
+            _batches.pop(batch_id, None)
+            try:
+                await store.delete_tactic(tactic_id)
+            except Exception:
+                logger.exception("Could not roll back imported tactic %s", tactic_id)
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        if final_dir.exists() and not succeeded:
+            shutil.rmtree(final_dir, ignore_errors=True)
 
 
 class RelinkSourceDemo(BaseModel):

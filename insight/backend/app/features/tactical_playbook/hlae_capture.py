@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import csv
+import ctypes
+from collections import deque
 import io
 import json
+import math
 import os
 import re
 import subprocess
@@ -34,6 +37,21 @@ def _ffmpeg_from_ini(ini_path: Path) -> Path | None:
         return None
     candidate = Path(match.group(1).strip().strip('"')).expanduser()
     return candidate.resolve() if candidate.is_file() else None
+
+
+def _write_atomic(path: Path, content: bytes) -> None:
+    temporary = path.with_name(f".{path.name}.{os.urandom(6).hex()}.tmp")
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def validate_hlae_installation(
@@ -83,25 +101,24 @@ def _install_hlae_ffmpeg_reference(files: dict[str, Path]) -> tuple[Path, bytes 
     try:
         previous = ini_path.read_bytes() if ini_path.exists() else None
         ini_path.parent.mkdir(parents=True, exist_ok=True)
-        ini_path.write_text(f"[Ffmpeg]\nPath={selected}\n", encoding="utf-8")
+        _write_atomic(ini_path, f"[Ffmpeg]\nPath={selected}\n".encode("utf-8"))
     except OSError as exc:
         raise HLAECaptureError(f"Could not configure HLAE's FFmpeg path: {exc}") from exc
     return ini_path, previous
 
 
-def _restore_hlae_ffmpeg_reference(snapshot: tuple[Path, bytes | None] | None) -> None:
+def _restore_hlae_ffmpeg_reference(snapshot: tuple[Path, bytes | None] | None) -> bool:
     if snapshot is None:
-        return
+        return True
     path, previous = snapshot
     try:
         if previous is None:
             path.unlink(missing_ok=True)
         else:
-            path.write_bytes(previous)
+            _write_atomic(path, previous)
+        return True
     except OSError:
-        # A valid FFmpeg.ini is safer to leave behind than to fail the capture
-        # cleanup after CS2 has already exited.
-        pass
+        return False
 
 
 def build_hlae_capture(
@@ -117,10 +134,25 @@ def build_hlae_capture(
         raise HLAECaptureError("HLAE capture requires a real .dem file.")
     if not re.fullmatch(r"\d{17}", steam_id64):
         raise HLAECaptureError("HLAE capture needs the player's SteamID64.")
-    if not (isinstance(start_tick, int) and isinstance(end_tick, int) and end_tick > start_tick):
+    if not (
+        isinstance(start_tick, int) and not isinstance(start_tick, bool)
+        and isinstance(end_tick, int) and not isinstance(end_tick, bool)
+        and start_tick >= 0 and end_tick > start_tick
+    ):
         raise HLAECaptureError("Invalid HLAE capture tick range.")
-    if tick_rate <= 0 or fps not in {30, 60, 120}:
-        raise HLAECaptureError("Invalid tick rate or HLAE capture FPS.")
+    try:
+        valid_tick_rate = math.isfinite(float(tick_rate)) and float(tick_rate) > 0
+    except (TypeError, ValueError, OverflowError):
+        valid_tick_rate = False
+    valid_dimensions = (
+        isinstance(width, int) and not isinstance(width, bool)
+        and isinstance(height, int) and not isinstance(height, bool)
+        and 320 <= width <= 7680 and 240 <= height <= 4320
+        and width * height <= 33_177_600
+    )
+    valid_fps = isinstance(fps, int) and not isinstance(fps, bool) and fps in {30, 60, 120}
+    if not valid_tick_rate or not valid_fps or not valid_dimensions:
+        raise HLAECaptureError("Invalid HLAE tick rate, output FPS, or resolution.")
     if not re.fullmatch(r"tactical_[a-f0-9]{16,32}", config_name):
         raise HLAECaptureError("Invalid generated CS2 config name.")
 
@@ -224,6 +256,72 @@ def _cs2_pids() -> list[int]:
     return pids
 
 
+def _windows_process_snapshot() -> dict[int, tuple[int, str]]:
+    """Return PID -> (parent PID, executable name) without shelling out per poll."""
+    if os.name != "nt":
+        return {}
+    try:
+        from ctypes import wintypes
+
+        class PROCESSENTRY32W(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", wintypes.WCHAR * 260),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        kernel32.Process32FirstW.restype = wintypes.BOOL
+        kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        kernel32.Process32NextW.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        snapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
+        if snapshot in (None, ctypes.c_void_p(-1).value):
+            return {}
+        result: dict[int, tuple[int, str]] = {}
+        try:
+            entry = PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(entry)
+            more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+            while more:
+                result[int(entry.th32ProcessID)] = (
+                    int(entry.th32ParentProcessID), str(entry.szExeFile),
+                )
+                more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+        finally:
+            kernel32.CloseHandle(snapshot)
+        return result
+    except (AttributeError, OSError, TypeError, ValueError):
+        return {}
+
+
+def _descendant_process_ids(root_pid: int, snapshot: dict[int, tuple[int, str]]) -> set[int]:
+    children: dict[int, list[int]] = {}
+    for pid, (parent_pid, _name) in snapshot.items():
+        children.setdefault(parent_pid, []).append(pid)
+    descendants: set[int] = set()
+    pending = [root_pid]
+    while pending:
+        parent_pid = pending.pop()
+        for child_pid in children.get(parent_pid, ()):
+            if child_pid not in descendants:
+                descendants.add(child_pid)
+                pending.append(child_pid)
+    return descendants
+
+
 def _visible_window_titles(pid: int) -> list[str]:
     if os.name != "nt":
         return []
@@ -291,21 +389,101 @@ def _marker(text: str, name: str) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
+class _ConsoleLogMonitor:
+    """Parse new console lines once while retaining a bounded diagnostic tail."""
+
+    _WARNING = re.compile(
+        r"Could not find address for pattern[^\r\n]*|Problem in .*AfxHookSource2[^\r\n]*"
+    )
+    _FAILURE = re.compile(
+        r"TL_ERROR[^\r\n]*|AFXERROR: Failed writing image[^\r\n]*|"
+        r"Error loading[^\r\n]*capture\.js[^\r\n]*",
+        re.IGNORECASE,
+    )
+
+    def __init__(self, max_chars: int = 4_000_000) -> None:
+        self.max_chars = max(1, max_chars)
+        self._tail: deque[str] = deque()
+        self._tail_size = 0
+        self._pending_line = ""
+        self._last_partial_line = ""
+        self.warning: str | None = None
+        self.failure: str | None = None
+        self.target: dict | None = None
+        self.started: dict | None = None
+        self.ended: dict | None = None
+
+    def _append_tail(self, text: str) -> None:
+        if not text:
+            return
+        self._tail.append(text)
+        self._tail_size += len(text)
+        overflow = self._tail_size - self.max_chars
+        while overflow > 0 and self._tail:
+            first = self._tail[0]
+            if len(first) <= overflow:
+                self._tail.popleft()
+                self._tail_size -= len(first)
+                overflow -= len(first)
+            else:
+                self._tail[0] = first[overflow:]
+                self._tail_size -= overflow
+                overflow = 0
+
+    def _parse_line(self, line: str) -> None:
+        if self.warning is None:
+            warning = self._WARNING.search(line)
+            if warning:
+                self.warning = warning.group(0)
+        if self.failure is None:
+            failure = self._FAILURE.search(line)
+            if failure:
+                self.failure = failure.group(0)
+        if self.target is None:
+            self.target = _marker(line, "TL_TARGET")
+        if self.started is None:
+            self.started = _marker(line, "TL_RECORD_START")
+        if self.ended is None:
+            self.ended = _marker(line, "TL_RECORD_END")
+
+    def feed(self, text: str) -> None:
+        if not text:
+            return
+        self._append_tail(text)
+        lines = (self._pending_line + text).split("\n")
+        self._pending_line = lines.pop()
+        for line in lines:
+            self._parse_line(line)
+        # Console writers can expose a complete marker before writing its newline.
+        # Re-scan only when that partial line actually grows.
+        if self._pending_line and self._pending_line != self._last_partial_line:
+            self._parse_line(self._pending_line)
+        self._last_partial_line = self._pending_line
+
+    def excerpt(self) -> str:
+        return "".join(self._tail)
+
+
 def _capture_files(folder: Path) -> tuple[Path | None, Path | None]:
     if not folder.is_dir():
         return None, None
-    videos: list[Path] = []
-    wavs: list[Path] = []
+    videos: list[tuple[float, Path]] = []
+    wavs: list[tuple[float, Path]] = []
     for root, _, names in os.walk(folder):
         for name in names:
             path = Path(root) / name
-            if path.suffix.lower() in {".mp4", ".avi", ".mov"}:
-                videos.append(path)
-            elif path.suffix.lower() == ".wav":
-                wavs.append(path)
-    videos.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    wavs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return (videos[0] if videos else None, wavs[0] if wavs else None)
+            suffix = path.suffix.lower()
+            if suffix not in {".mp4", ".avi", ".mov", ".wav"}:
+                continue
+            try:
+                entry = (path.stat().st_mtime, path)
+            except OSError:
+                # HLAE may still be renaming a take while this directory is scanned.
+                continue
+            (wavs if suffix == ".wav" else videos).append(entry)
+    videos.sort(key=lambda item: item[0], reverse=True)
+    wavs.sort(key=lambda item: item[0], reverse=True)
+    return (videos[0][1] if videos else None, wavs[0][1] if wavs else None)
 
 
 def _wait_for_capture(folder: Path, deadline: float) -> tuple[Path, Path]:
@@ -336,6 +514,8 @@ def run_hlae_capture(
     report: Callable[[str, str], None] | None = None,
 ) -> dict:
     """Launch one isolated CS2+HLAE POV and return only verified engine files."""
+    if not isinstance(timeout_seconds, int) or isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
+        raise HLAECaptureError("HLAE timeout must be a positive number of seconds.")
     output_dir.mkdir(parents=True, exist_ok=True)
     cs2_game = files["cs2"].parents[2]
     csgo = cs2_game / "csgo"
@@ -370,10 +550,13 @@ def run_hlae_capture(
     except FileExistsError as exc:
         raise HLAECaptureError("Generated CS2 config name unexpectedly already exists.") from exc
 
-    # The only CS2 PID observed after launch belongs to this isolated job; existing CS2 is rejected.
+    # Require an idle CS2 baseline before launch; later process-tree checks tie the game to HLAE.
     existing = _cs2_pids()
     if existing:
-        config_file.unlink(missing_ok=True)
+        try:
+            config_file.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise HLAECaptureError("Close CS2 before starting the isolated HLAE POV renderer.")
     try:
         log_offset = console_log.stat().st_size
@@ -381,8 +564,10 @@ def run_hlae_capture(
         log_offset = 0
     launcher: subprocess.Popen | None = None
     game_pid: int | None = None
+    owned_game_pids: set[int] = set()
+    launcher_exit_seen_at: float | None = None
     ffmpeg_ini_snapshot: tuple[Path, bytes | None] | None = None
-    full_log = ""
+    console_monitor = _ConsoleLogMonitor()
     target: dict | None = None
     started: dict | None = None
     ended: dict | None = None
@@ -408,10 +593,22 @@ def run_hlae_capture(
         last_warning = ""
         while time.monotonic() < deadline:
             pids = _cs2_pids()
-            if game_pid is None and pids:
-                game_pid = pids[0]
-                last_status = "Loading demo"
-                update(last_status, "CS2 started; loading the demo and waiting for the target player")
+            if launcher is not None and game_pid is None and pids:
+                snapshot = _windows_process_snapshot()
+                descendants = _descendant_process_ids(launcher.pid, snapshot)
+                launched_cs2 = {
+                    pid for pid, (_parent, name) in snapshot.items()
+                    if pid in descendants and name.casefold() == "cs2.exe"
+                }
+                owned_game_pids.update(launched_cs2)
+                if len(launched_cs2) > 1:
+                    raise HLAECaptureError(
+                        "HLAE started multiple CS2 processes; refusing to guess which one belongs to this POV."
+                    )
+                if launched_cs2:
+                    game_pid = next(iter(launched_cs2))
+                    last_status = "Loading demo"
+                    update(last_status, "CS2 started through HLAE; loading the demo and waiting for the target player")
             if game_pid is not None:
                 hlae_error = next(
                     (title for title in _visible_window_titles(game_pid)
@@ -425,38 +622,41 @@ def run_hlae_capture(
                     )
             new_text, log_offset = _read_new_console(console_log, log_offset)
             if new_text:
-                full_log += new_text
-                (output_dir / "console.log").write_text(full_log[-4_000_000:], encoding="utf-8")
-                warning = re.search(r"Could not find address for pattern[^\r\n]*|Problem in .*AfxHookSource2[^\r\n]*", full_log)
-                if warning and warning.group(0) != last_warning:
-                    last_warning = warning.group(0)
+                console_monitor.feed(new_text)
+                warning = console_monitor.warning
+                if warning and warning != last_warning:
+                    last_warning = warning
                     update(last_status, f"HLAE compatibility warning (continuing verification): {last_warning}")
-                failure = re.search(
-                    r"TL_ERROR[^\r\n]*|AFXERROR: Failed writing image[^\r\n]*|Error loading[^\r\n]*capture\.js[^\r\n]*",
-                    full_log, re.IGNORECASE,
-                )
-                if failure:
-                    raise HLAECaptureError(failure.group(0))
-                candidate = _marker(full_log, "TL_TARGET")
+                if console_monitor.failure:
+                    raise HLAECaptureError(console_monitor.failure)
+                candidate = console_monitor.target
                 if candidate:
                     if str(candidate.get("steamId")) != steam_id64 or candidate.get("mode") != 2:
                         raise HLAECaptureError("HLAE in-eye target verification failed: player SteamID or observer mode differs.")
                     target = candidate
-                candidate = _marker(full_log, "TL_RECORD_START")
+                candidate = console_monitor.started
                 if candidate and started is None:
                     started = candidate
                     take_folder = str(candidate.get("takeFolder") or "")
                     last_status = "Recording"
                     update(last_status, f"Recording native CS2 POV at tick {candidate.get('tick')}")
-                candidate = _marker(full_log, "TL_RECORD_END")
+                candidate = console_monitor.ended
                 if candidate:
                     ended = candidate
                     update("Verifying", f"HLAE recordEnd fired at tick {candidate.get('tick')}")
                     break
             if game_pid is not None and game_pid not in pids and ended is None:
                 raise HLAECaptureError("CS2 exited before HLAE confirmed recording completion.")
-            if launcher.poll() is not None and game_pid is None:
-                raise HLAECaptureError(f"HLAE exited before CS2 started (exit code {launcher.returncode}).")
+            launcher_code = launcher.poll()
+            if launcher_code is not None and launcher_code != 0:
+                raise HLAECaptureError(f"HLAE Custom Loader failed (exit code {launcher_code}).")
+            if launcher_code == 0 and game_pid is None:
+                if launcher_exit_seen_at is None:
+                    launcher_exit_seen_at = time.monotonic()
+                elif time.monotonic() - launcher_exit_seen_at >= 30:
+                    raise HLAECaptureError(
+                        "HLAE exited successfully, but no CS2 process launched by that HLAE instance appeared."
+                    )
             time.sleep(0.5)
         else:
             raise HLAECaptureError("HLAE did not report verified POV recording completion before timeout.")
@@ -490,24 +690,64 @@ def run_hlae_capture(
             "log_lines": lines,
         }
     finally:
+        render_log_path = output_dir / "render.log"
         try:
-            (output_dir / "render.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+            (output_dir / "console.log").write_text(console_monitor.excerpt(), encoding="utf-8")
         except OSError:
             pass
-        if game_pid is not None:
+
+        def cleanup_warning(message: str) -> None:
+            lines.append(message)
+            try:
+                with render_log_path.open("a", encoding="utf-8") as handle:
+                    handle.write(message + "\n")
+            except OSError:
+                pass
+
+        try:
+            render_log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+        # Re-check both executable name and ancestry before killing. PIDs can be
+        # reused after CS2 exits, and cleanup must never target an unrelated game.
+        if launcher is not None and owned_game_pids:
+            snapshot = _windows_process_snapshot()
+            descendants = _descendant_process_ids(launcher.pid, snapshot)
+            safe_to_kill = {
+                pid for pid in owned_game_pids
+                if pid in descendants
+                and pid in snapshot
+                and snapshot[pid][1].casefold() == "cs2.exe"
+            }
+        else:
+            safe_to_kill = set()
+        for pid in sorted(safe_to_kill):
             try:
                 subprocess.run(
-                    ["taskkill.exe", "/PID", str(game_pid), "/T", "/F"],
+                    ["taskkill.exe", "/PID", str(pid), "/T", "/F"],
                     capture_output=True, timeout=15,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
             except (OSError, subprocess.TimeoutExpired):
                 pass
-        if launcher is not None and launcher.poll() is None:
-            launcher.kill()
+        if launcher is not None:
+            try:
+                if launcher.poll() is None:
+                    launcher.kill()
+            except OSError as exc:
+                cleanup_warning(f"Cleanup warning: Could not stop the HLAE launcher: {exc}")
             try:
                 launcher.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                pass
-        config_file.unlink(missing_ok=True)
-        _restore_hlae_ffmpeg_reference(ffmpeg_ini_snapshot)
+                cleanup_warning("Cleanup warning: HLAE launcher did not exit after termination.")
+            except OSError as exc:
+                cleanup_warning(f"Cleanup warning: Could not reap the HLAE launcher: {exc}")
+        try:
+            config_file.unlink(missing_ok=True)
+        except OSError as exc:
+            cleanup_warning(f"Cleanup warning: Could not remove the generated CS2 config: {exc}")
+        restored = _restore_hlae_ffmpeg_reference(ffmpeg_ini_snapshot)
+        if not restored:
+            cleanup_warning(
+                "Cleanup warning: HLAE's ffmpeg.ini could not be restored; check its FFmpeg path before the next render."
+            )

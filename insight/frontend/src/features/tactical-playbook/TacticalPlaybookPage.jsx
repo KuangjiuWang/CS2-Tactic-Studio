@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { PanelLeft, Plus, Upload } from "lucide-react";
-import API from "../../api/api";
+import API, { API_BASE_URL } from "../../api/api";
 import { useT } from "../../i18n/useT";
 import FolderTree from "./FolderTree";
 import PlaybookFilters from "./PlaybookFilters";
@@ -39,16 +39,15 @@ export default function TacticalPlaybookPage() {
   const visible = filterTactics(tree.tactics, { ...filters, folder: folderId });
   const open = (id) => navigate(`/tactics/${id}`);
   const run = async (operation) => { setError(""); try { await operation(); await refresh(); } catch (err) { setError(errorText(err)); } };
-  const exportTactic = async (item) => {
-    const { data } = await API.get(`/tactical/tactics/${item.id}`);
-    const blob = new Blob([JSON.stringify({ format: "cs2-tactic-v1", tactic: data }, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob), anchor = document.createElement("a");
-    anchor.href = url; anchor.download = `${item.name.replace(/[<>:"/\\|?*]/g, "_")}.tactic.json`;
-    anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const exportTactic = (item) => {
+    const anchor = document.createElement("a");
+    anchor.href = `${API_BASE_URL}/api/tactical/tactics/${encodeURIComponent(item.id)}/export`;
+    anchor.download = `${item.name.replace(/[<>:"/\\|?*]/g, "_")}.cstactic`;
+    anchor.click();
   };
   const action = (key, item) => {
     if (key === "open") return open(item.id);
-    if (key === "export" || key === "share") return void run(() => exportTactic(item));
+    if (key === "export" || key === "share") return exportTactic(item);
     if (key === "removeFromFolder") return void run(() => API.put(`/tactical/tactics/${item.id}/folders`, { folder_ids: folderIds(item).filter((id) => id !== folderId) }));
     if (key === "duplicate") return void run(async () => {
       const { data } = await API.get(`/tactical/tactics/${item.id}`);
@@ -76,7 +75,15 @@ export default function TacticalPlaybookPage() {
     {!collapsed && <FolderTree folders={tree.folders} selected={folderId} map={filters.map} total={tree.tactics.length} select={select} selectMap={(value) => { const next = new URLSearchParams(params); value ? next.set("map", value) : next.delete("map"); navigate({ pathname: "/tactics", search: next.toString() }); }} action={(key, item) => setDialog({ kind: "folders", action: key, item })} />}
     <main className="playbook-main">
       <header className="playbook-header"><button aria-label={t("playbook.toggleFolders")} onClick={() => setCollapsed(!collapsed)}><PanelLeft size={18} /></button><div><h1>{selectedFolder ? folderPath(selectedFolder, tree.folders) : t("playbook.all")}</h1><p>{t("playbook.count", { count: visible.length })}</p></div><span className="playbook-spacer" /><button onClick={() => setDialog({ kind: "folders", action: "newFolder" })}><Plus size={15} />{t("playbook.newFolder")}</button><button onClick={() => fileRef.current?.click()}><Upload size={15} />{t("playbook.import")}</button><Link className="playbook-primary" to="/tactics/new">{t("playbook.fromDemo")}</Link></header>
-      <input hidden ref={fileRef} type="file" accept=".json" onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void run(async () => { if (file.size > 25 * 1024 * 1024) throw new Error(t("playbook.fileTooLarge")); await API.post("/tactical/import", JSON.parse(await file.text())); }); }} />
+      <input hidden ref={fileRef} type="file" accept=".cstactic,.json,application/json,application/vnd.cs2-tactic+zip" onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void run(async () => {
+        if (file.name.toLowerCase().endsWith(".cstactic")) {
+          const form = new FormData(); form.append("package", file, file.name);
+          await API.post("/tactical/import-package", form);
+          return;
+        }
+        if (file.size > 25 * 1024 * 1024) throw new Error(t("playbook.fileTooLarge"));
+        await API.post("/tactical/import", JSON.parse(await file.text()));
+      }); }} />
       <PlaybookFilters filters={filters} change={change} />
       {error && <div className="playbook-error" role="alert">{error}<button onClick={() => void run(refresh)}>{t("playbook.retry")}</button></div>}
       {folderId && !selectedFolder && !loading ? <div className="playbook-empty"><p>{t("playbook.folderMissing")}</p><button onClick={() => select(null)}>{t("playbook.all")}</button></div>

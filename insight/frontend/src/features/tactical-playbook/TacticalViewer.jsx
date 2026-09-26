@@ -94,7 +94,12 @@ function Viewer({ initialTactic = null }) {
     let active = true;
     const recordingContext = recordingContextRef.current;
     API.get(`/tactical/prepare-povs/${id}`).then(({ data }) => {
-      if (active && recordingContextRef.current === recordingContext) setBatch(data);
+      if (active && recordingContextRef.current === recordingContext) {
+        setBatch(data);
+        if (["obs", "advanced_obs", "hlae"].includes(data?.recording_mode)) {
+          setRecordingMode(data.recording_mode);
+        }
+      }
     })
       .catch((reason) => {
         if (active && recordingContextRef.current === recordingContext) setError(String(reason?.response?.data?.detail || reason.message));
@@ -472,8 +477,9 @@ function Viewer({ initialTactic = null }) {
       </div>
       <div className="tactical-header-actions">
         <div className="tactical-recording-mode" role="group" aria-label={t("playbook.viewer2")}>
-          <button type="button" data-testid="record-mode-obs" aria-pressed={recordingMode === "obs"} disabled={preparing || (batch && !["Complete", "Failed"].includes(batch.status))} className={recordingMode === "obs" ? "is-selected" : ""} onClick={() => setRecordingMode("obs")}>OBS</button>
-          <button type="button" data-testid="record-mode-hlae" aria-pressed={recordingMode === "hlae"} title={t("playbook.viewer3")} disabled={preparing || (batch && !["Complete", "Failed"].includes(batch.status))} className={recordingMode === "hlae" ? "is-selected" : ""} onClick={() => setRecordingMode("hlae")}>HLAE</button>
+          <button type="button" data-testid="record-mode-obs" aria-label={t("playbook.recording.normalLabel")} aria-pressed={recordingMode === "obs"} title={t("playbook.recording.normalHint")} disabled={preparing || (batch && !["Complete", "Failed"].includes(batch.status))} className={recordingMode === "obs" ? "is-selected" : ""} onClick={() => setRecordingMode("obs")}>{t("playbook.recording.normalShort")}</button>
+          <button type="button" data-testid="record-mode-advanced-obs" aria-label={t("playbook.recording.advancedLabel")} aria-pressed={recordingMode === "advanced_obs"} title={t("playbook.recording.advancedHint")} disabled={preparing || (batch && !["Complete", "Failed"].includes(batch.status))} className={recordingMode === "advanced_obs" ? "is-selected" : ""} onClick={() => setRecordingMode("advanced_obs")}>{t("playbook.recording.advancedShort")}</button>
+          <button type="button" data-testid="record-mode-hlae" aria-label="HLAE" aria-pressed={recordingMode === "hlae"} title={t("playbook.viewer3")} disabled={preparing || (batch && !["Complete", "Failed"].includes(batch.status))} className={recordingMode === "hlae" ? "is-selected" : ""} onClick={() => setRecordingMode("hlae")}>HLAE</button>
         </div>
         {recordingMode === "hlae" && <span className="tactical-mode-hint">{t("playbook.viewer4")}</span>}
         {batch && ["Complete", "Failed"].includes(batch.status) && batch.players?.some((player) => player.status !== "Complete") && <button type="button" className="tactical-action" onClick={retryFailedPovs} disabled={preparing}>{t("playbook.retryFailedPovs")}</button>}

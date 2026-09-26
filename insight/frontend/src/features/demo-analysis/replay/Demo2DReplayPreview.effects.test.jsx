@@ -1,6 +1,7 @@
 import { render } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
-import { ReplayRosterAmbientEffect, replayEndTickForRound } from "./Demo2DReplayPreview";
+import { ReplayRosterAmbientEffect } from "./Demo2DReplayPreview";
+import { replayEndTickForRound } from "./replayRoundEvents";
 
 describe("ReplayRosterAmbientEffect", () => {
   test("uses compositor-friendly static sheets without a Canvas frame loop", () => {
@@ -48,5 +49,16 @@ describe("replayEndTickForRound", () => {
   test("caps the final tail at the real demo end", () => {
     const round = { round_number: 1, end_tick: 2_000, round_end_tick: 2_000 };
     expect(replayEndTickForRound(round, [round], { demo_end_tick: 2_080 }, 64)).toBe(2_080);
+  });
+
+  test("finds the nearest following round without requiring pre-sorted round data", () => {
+    const round = { round_number: 1, end_tick: 1_000, round_end_tick: 1_000 };
+    const rounds = [
+      { round_number: 4, start_tick: 4_000 },
+      { round_number: 3, start_tick: 3_000 },
+      { round_number: 2, start_tick: 1_100 },
+    ];
+
+    expect(replayEndTickForRound(round, rounds, { demo_end_tick: 5_000 }, 64)).toBe(1_099);
   });
 });
