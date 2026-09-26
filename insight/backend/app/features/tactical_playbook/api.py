@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from contextlib import AsyncExitStack
 from fractions import Fraction
 import subprocess
@@ -18,6 +19,7 @@ from pydantic import BaseModel
 
 from ...env_utils import get_data_dir
 from ...env_utils import load_config
+from ...file_hash import file_sha256_hex
 from ...recording.api import QueueRecordingRequest, execute_recording_queue, recording_result_observer
 from ...recording.models import RecordingRequestDTO
 from ...recording.progress import recording_progress_observer, require_verified_pov
@@ -84,6 +86,11 @@ class RoundSelection(BaseModel):
     round_number: int
     side: str
     recording_mode: Literal["obs", "hlae"] = "obs"
+    tactic_id: str | None = None
+
+
+def _canonical_demo_path(path: str) -> str:
+    return os.path.normcase(str(Path(path).expanduser().resolve()))
 
 
 def _jobs(selection: RoundSelection) -> list[dict]:
@@ -431,12 +438,25 @@ async def prepare_povs(selection: RoundSelection):
     jobs = _jobs(selection)
     if selection.recording_mode == "hlae":
         _validate_hlae_ready()
+    tactic = None
+    if selection.tactic_id:
+        tactic = await TacticalStore().get_tactic(selection.tactic_id)
+        if tactic is None:
+            raise HTTPException(404, "tactic not found")
+        if (
+            _canonical_demo_path(selection.demo_path) != _canonical_demo_path(tactic["source_demo_path"])
+            or int(tactic["round_number"]) != int(selection.round_number)
+            or str(tactic["side"]).upper() != str(selection.side).upper()
+            or str(tactic["map_name"]) != str(selection.analysis_workspace.get("map_name") or "")
+        ):
+            raise HTTPException(409, "recording selection does not match the saved tactic")
     batch_id = uuid4().hex
     _batches[batch_id] = {
         "id": batch_id, "status": "Waiting", "round_number": selection.round_number,
         "demo_path": selection.demo_path,
         "side": selection.side.upper(), "tick_rate": selection.analysis_workspace["tick_rate"],
         "recording_mode": selection.recording_mode,
+        "tactic_id": selection.tactic_id,
         "players": [{
             "player_id": j["player_id"], "player_name": j["player_name"], "steam_id64": j["steam_id64"],
             "coverage_start_tick": j["coverage_start_tick"],
@@ -445,6 +465,13 @@ async def prepare_povs(selection: RoundSelection):
         } for j in jobs],
     }
     _persist_batch(_batches[batch_id])
+    if tactic is not None:
+        try:
+            await TacticalStore().update_recording(tactic["id"], batch_id)
+        except ValueError as exc:
+            _batches.pop(batch_id, None)
+            _batch_state_path(batch_id).unlink(missing_ok=True)
+            raise HTTPException(404, str(exc)) from exc
     _active_batch = batch_id
     task = asyncio.create_task(_run_batch(batch_id, jobs, float(selection.analysis_workspace["tick_rate"])))
     _batch_tasks.add(task)
@@ -617,6 +644,13 @@ async def save_tactic(body: SaveTactic):
         row, team_key, _ = select_round(
             body.selection.analysis_workspace, body.selection.round_number, body.selection.side,
         )
+        demo_hash = None
+        demo_file = Path(body.selection.demo_path).expanduser()
+        if demo_file.is_file() and demo_file.suffix.lower() == ".dem":
+            try:
+                demo_hash = await asyncio.to_thread(file_sha256_hex, demo_file, chunk_size=1024 * 1024)
+            except OSError as exc:
+                raise HTTPException(422, f"could not fingerprint source demo: {exc}") from exc
         return await TacticalStore().create_tactic(
             name=body.name, map_name=str(body.selection.analysis_workspace.get("map_name") or ""),
             side=body.selection.side.upper(), demo_path=body.selection.demo_path,
@@ -625,6 +659,7 @@ async def save_tactic(body: SaveTactic):
             freeze_end_tick=int(row["freeze_end_tick"]),
             round_end_tick=int(row["round_end_tick"]),
             folder_id=body.folder_id,
+            source_demo_hash=demo_hash,
             metadata={"team_key": team_key, "pov_batch_id": body.pov_batch_id,
                       "analysis_workspace": body.selection.analysis_workspace,
                       "source_match": " vs ".join(str(body.selection.analysis_workspace.get(k) or "") for k in ("team_a_name", "team_b_name")),
@@ -639,7 +674,64 @@ async def get_tactic(tactic_id: str):
     tactic = await TacticalStore().get_tactic(tactic_id)
     if tactic is None:
         raise HTTPException(404, "tactic not found")
+    tactic["source_demo_available"] = Path(tactic["source_demo_path"]).is_file()
     return tactic
+
+
+class RelinkSourceDemo(BaseModel):
+    demo_path: str
+    allow_unverified: bool = False
+
+
+@router.patch("/tactics/{tactic_id}/source-demo")
+async def relink_source_demo(tactic_id: str, body: RelinkSourceDemo):
+    store = TacticalStore()
+    tactic = await store.get_tactic(tactic_id)
+    if tactic is None:
+        raise HTTPException(404, "tactic not found")
+    candidate = Path(body.demo_path).expanduser()
+    if candidate.suffix.lower() != ".dem":
+        raise HTTPException(422, "source file must be a .dem file")
+    if not candidate.is_file():
+        raise HTTPException(404, "selected demo file does not exist")
+    candidate = candidate.resolve()
+    try:
+        candidate_hash = await asyncio.to_thread(file_sha256_hex, candidate, chunk_size=1024 * 1024)
+    except OSError as exc:
+        raise HTTPException(422, f"could not read selected demo: {exc}") from exc
+
+    expected_hash = tactic.get("source_demo_hash")
+    if expected_hash:
+        if candidate_hash != expected_hash:
+            raise HTTPException(409, "selected demo does not match the tactic's original source")
+    else:
+        original = Path(tactic["source_demo_path"]).expanduser()
+        if original.is_file():
+            try:
+                original_hash = await asyncio.to_thread(file_sha256_hex, original, chunk_size=1024 * 1024)
+            except OSError as exc:
+                raise HTTPException(422, f"could not verify the original demo: {exc}") from exc
+            if candidate_hash != original_hash:
+                raise HTTPException(409, "selected demo does not match the tactic's original source")
+        elif not body.allow_unverified:
+            raise HTTPException(409, {
+                "code": "DEMO_UNVERIFIED",
+                "message": "This older tactic has no saved source fingerprint. Confirm that the selected demo is the same match.",
+            })
+
+    old_path = tactic["source_demo_path"]
+    try:
+        await store.relink_source_demo(tactic_id, str(candidate), candidate_hash)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    batch_id = (tactic.get("metadata") or {}).get("pov_batch_id")
+    batch = _get_batch(batch_id) if batch_id else None
+    if batch and _canonical_demo_path(str(batch.get("demo_path") or "")) == _canonical_demo_path(old_path):
+        batch["demo_path"] = str(candidate)
+        _persist_batch(batch)
+    updated = await store.get_tactic(tactic_id)
+    updated["source_demo_available"] = True
+    return updated
 
 
 @router.post("/tactics/{tactic_id}/steps")

@@ -47,6 +47,22 @@ def test_tactic_can_move_between_folders(tmp_path):
     asyncio.run(_tactic_can_move_between_folders(tmp_path))
 
 
+def test_tactic_source_demo_can_be_relinked(tmp_path):
+    async def scenario():
+        store = TacticalStore(tmp_path / "relink.db")
+        tactic = await store.create_tactic(
+            name="B split", map_name="de_mirage", side="T", demo_path="old.dem",
+            round_number=1, round_start_tick=1, freeze_end_tick=10, round_end_tick=100,
+            source_demo_hash="old-hash",
+        )
+        await store.relink_source_demo(tactic["id"], "new.dem", "new-hash")
+        reopened = await TacticalStore(store.path).get_tactic(tactic["id"])
+        assert reopened["source_demo_path"] == "new.dem"
+        assert reopened["source_demo_hash"] == "new-hash"
+
+    asyncio.run(scenario())
+
+
 async def _tactic_can_move_between_folders(tmp_path):
     store = TacticalStore(tmp_path / "playbook.db")
     folder = await store.create_folder("T side")

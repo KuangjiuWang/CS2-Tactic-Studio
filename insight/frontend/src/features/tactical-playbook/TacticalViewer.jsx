@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, Maximize2, Pause, Play, Plus, Save, Volume2, VolumeX } from "lucide-react";
 import API, { API_BASE_URL } from "../../api/api";
+import { desktopBridge } from "../../desktop/desktopBridge.js";
 import { useAppShell } from "../../context/AppShellContext";
 import { useT } from "../../i18n/useT";
 import Demo2DReplayPreview from "../demo-analysis/replay/Demo2DReplayPreview";
@@ -15,8 +16,9 @@ import "./tacticalPlaybook.css";
 function Viewer({ initialTactic = null }) {
   const t = useT();
   const shell = useAppShell();
-  const workspace = initialTactic?.metadata?.analysis_workspace || shell.analysisWorkspace;
-  const demoPath = initialTactic?.source_demo_path || shell.uploadedDemos?.[shell.currentMatchIndex]?.path;
+  const shellDemoPath = shell.uploadedDemos?.[shell.currentMatchIndex]?.path || "";
+  const [demoPath, setDemoPath] = useState(initialTactic?.source_demo_path || shellDemoPath);
+  const workspace = initialTactic?.metadata?.analysis_workspace || (demoPath === shellDemoPath ? shell.analysisWorkspace : null);
   const rounds = workspace?.rounds || [];
   const [roundNumber, setRoundNumber] = useState(initialTactic?.round_number || null);
   const [side, setSide] = useState(initialTactic?.side || "T");
@@ -24,6 +26,8 @@ function Viewer({ initialTactic = null }) {
   const [selected, setSelected] = useState("0");
   const [batch, setBatch] = useState(null);
   const [preparing, setPreparing] = useState(false);
+  const [relinkingDemo, setRelinkingDemo] = useState(false);
+  const [sourceDemoAvailable, setSourceDemoAvailable] = useState(initialTactic?.source_demo_available !== false);
   const prepareLock = useRef(false);
   const autoSaveBatchRef = useRef(null);
   const [error, setError] = useState("");
@@ -61,13 +65,17 @@ function Viewer({ initialTactic = null }) {
   const defaultTacticName = `${mapLabel || workspace?.map_name || "CS2"} ${side}`;
 
   useEffect(() => {
+    if (!initialTactic && !demoPath && shellDemoPath) setDemoPath(shellDemoPath);
+  }, [demoPath, initialTactic, shellDemoPath]);
+
+  useEffect(() => {
     const initialTick = Number(activeRound?.freeze_end_tick || activeRound?.start_tick || 0);
     setTick(initialTick);
     setReplaySeek(initialTick);
     setSelected("0");
     setPlaying(false);
     setBatch(null);
-  }, [demoPath, actualRound]);
+  }, [actualRound]);
 
   useEffect(() => {
     const id = initialTactic?.metadata?.pov_batch_id;
@@ -91,15 +99,27 @@ function Viewer({ initialTactic = null }) {
     return () => clearInterval(poll);
   }, [batch?.id, batch?.status]);
 
+  const createDraftTactic = async (fallbackName = defaultTacticName) => {
+    const { data } = await API.post("/tactical/tactics", {
+      name: tacticName.trim() || fallbackName,
+      selection: { demo_path: demoPath, analysis_workspace: workspace, round_number: actualRound, side },
+    });
+    setSavedTactic(data);
+    setTacticName(data.name);
+    return data;
+  };
+
   const prepare = async () => {
     if (!demoPath || !workspace || prepareLock.current) return;
     prepareLock.current = true;
     setPreparing(true);
     setError("");
     try {
+      const tactic = savedTactic || await createDraftTactic();
       const { data } = await API.post("/tactical/prepare-povs", {
         demo_path: demoPath, analysis_workspace: workspace,
         round_number: actualRound, side, recording_mode: recordingMode,
+        tactic_id: tactic.id,
       });
       setBatch(data);
     } catch (reason) {
@@ -108,6 +128,47 @@ function Viewer({ initialTactic = null }) {
     } finally {
       prepareLock.current = false;
       setPreparing(false);
+    }
+  };
+
+  const relinkSourceDemo = async () => {
+    if (!savedTactic || !desktopBridge?.showOpenDialog || relinkingDemo) return;
+    setError("");
+    let selection;
+    try {
+      selection = await desktopBridge.showOpenDialog({
+        title: t("playbook.relinkDemo"),
+        filters: [{ name: "CS2 Demo", extensions: ["dem"] }],
+        properties: ["openFile"],
+      });
+    } catch (reason) {
+      setError(String(reason?.message || reason));
+      return;
+    }
+    const nextPath = selection?.filePaths?.[0];
+    if (selection?.canceled || !nextPath) return;
+
+    setRelinkingDemo(true);
+    try {
+      let result;
+      try {
+        result = await API.patch(`/tactical/tactics/${savedTactic.id}/source-demo`, { demo_path: nextPath });
+      } catch (reason) {
+        const detail = reason?.response?.data?.detail;
+        if (detail?.code !== "DEMO_UNVERIFIED" || !window.confirm(t("playbook.unverifiedDemoConfirm"))) throw reason;
+        result = await API.patch(`/tactical/tactics/${savedTactic.id}/source-demo`, {
+          demo_path: nextPath, allow_unverified: true,
+        });
+      }
+      setDemoPath(result.data.source_demo_path);
+      setSourceDemoAvailable(true);
+      setSavedTactic(result.data);
+      setBatch((current) => current ? { ...current, demo_path: result.data.source_demo_path } : current);
+    } catch (reason) {
+      const detail = reason?.response?.data?.detail;
+      setError(typeof detail === "object" ? detail.message || JSON.stringify(detail) : String(detail || reason.message));
+    } finally {
+      setRelinkingDemo(false);
     }
   };
 
@@ -306,7 +367,7 @@ function Viewer({ initialTactic = null }) {
     if (selected === "2d") setPlaying(next);
   }, [selected]);
 
-  if (!workspace || !demoPath || !rounds.length || (initialTactic && !initialTactic.metadata?.analysis_workspace && initialTactic.source_demo_path !== shell.uploadedDemos?.[shell.currentMatchIndex]?.path)) {
+  if (!workspace || !demoPath || !rounds.length) {
     return <div className="p-8 text-cs2-text-primary"><p>{t("playbook.sourceMissing")}</p><Link to="/analysis">{t("playbook.goAnalysis")}</Link> · <Link to="/tactics">{t("playbook.back")}</Link></div>;
   }
 
@@ -325,9 +386,11 @@ function Viewer({ initialTactic = null }) {
         {recordingMode === "hlae" && <span className="tactical-mode-hint">{t("playbook.viewer4")}</span>}
         {batch && ["Complete", "Failed"].includes(batch.status) && batch.players?.some((player) => player.status !== "Complete") && <button type="button" className="tactical-action" onClick={retryFailedPovs} disabled={preparing}>{t("playbook.retryFailedPovs")}</button>}
         <Link to="/tactics" className="tactical-action"><ArrowLeft size={15} />{t("playbook.back")}</Link>
+        {savedTactic && <button type="button" className="tactical-action" onClick={() => void relinkSourceDemo()} disabled={relinkingDemo || !desktopBridge?.showOpenDialog} data-testid="relink-demo">{relinkingDemo ? t("playbook.relinkingDemo") : sourceDemoAvailable ? t("playbook.relinkDemo") : t("playbook.sourceMissingRelink")}</button>}
         <button type="button" className="tactical-action tactical-action--primary" onClick={prepare} disabled={preparing || players.length !== 5 || (batch && !["Complete", "Failed"].includes(batch.status))}>{t("playbook.viewer5")}</button>
       </div>
     </header>
+    {savedTactic && !sourceDemoAvailable && <div role="alert" className="tactical-error">{t("playbook.sourceFileMissing")}</div>}
     {error && <div role="alert" className="tactical-error">{error}</div>}
     {batch?.status === "Failed" && <div role="alert" className="tactical-error">{batch.error || batch.players?.filter((item) => item.status === "Failed").map((item) => `${item.player_name}: ${item.error}`).join("；") || (t("playbook.viewer6"))}</div>}
     <div className="tactical-body">

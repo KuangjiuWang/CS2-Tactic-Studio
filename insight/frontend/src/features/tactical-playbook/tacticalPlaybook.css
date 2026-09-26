@@ -65,6 +65,8 @@
 .tactical-library-new button { width: 27px; display: grid; place-items: center; border: 1px solid var(--cs2-border); border-radius: 4px; }
 
 .tactical-pov-rail { display: flex; flex-direction: column; gap: 6px; padding: 8px; background: var(--cs2-bg-card); }
+.tactical-preview-mode { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; min-height: 22px; padding: 0 3px; color: var(--cs2-text-secondary); font-size: 9px; cursor: pointer; }
+.tactical-preview-mode input { width: 12px; height: 12px; margin: 0; accent-color: var(--cs2-accent); }
 .tactical-pov-tile { flex: 0 0 auto; display: block; width: 100%; overflow: hidden; border: 1px solid var(--cs2-border); border-radius: 5px; text-align: left; background: var(--cs2-bg-card); transition: border-color 160ms, background 160ms; }
 .tactical-pov-tile:hover { border-color: var(--cs2-border); }
 .tactical-pov-tile.is-selected { border: 2px solid var(--cs2-border); background: var(--cs2-bg-card); box-shadow: 0 0 0 2px var(--cs2-border); }

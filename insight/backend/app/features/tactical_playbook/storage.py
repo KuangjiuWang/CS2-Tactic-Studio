@@ -116,13 +116,14 @@ class TacticalStore:
     async def create_tactic(self, *, name: str, map_name: str, side: str, demo_path: str,
                             round_number: int, round_start_tick: int, freeze_end_tick: int,
                             round_end_tick: int, folder_id: str | None = None,
-                            metadata: dict | None = None) -> dict:
+                            metadata: dict | None = None,
+                            source_demo_hash: str | None = None) -> dict:
         await self.initialize()
         if not name.strip() or side not in {"T", "CT"}:
             raise ValueError("tactic name and T/CT side are required")
         row = {"id": uuid4().hex, "folder_id": folder_id, "name": name.strip(),
                "description": "", "map_name": map_name, "side": side,
-               "source_demo_path": demo_path, "source_demo_hash": None,
+               "source_demo_path": demo_path, "source_demo_hash": source_demo_hash,
                "round_number": round_number, "round_start_tick": round_start_tick,
                "freeze_end_tick": freeze_end_tick, "round_end_tick": round_end_tick,
                "metadata_json": json.dumps(metadata or {}, ensure_ascii=False),
@@ -255,6 +256,17 @@ class TacticalStore:
             metadata["pov_batch_id"] = batch_id
             await db.execute("UPDATE tactical_tactics SET metadata_json=?,updated_at=? WHERE id=?",
                              (json.dumps(metadata, ensure_ascii=False), _now(), tactic_id))
+            await db.commit()
+
+    async def relink_source_demo(self, tactic_id: str, demo_path: str, demo_hash: str) -> None:
+        await self.initialize()
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                "UPDATE tactical_tactics SET source_demo_path=?,source_demo_hash=?,updated_at=? WHERE id=?",
+                (demo_path, demo_hash, _now(), tactic_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("tactic does not exist")
             await db.commit()
 
     async def rename(self, kind: str, item_id: str, name: str) -> None:
