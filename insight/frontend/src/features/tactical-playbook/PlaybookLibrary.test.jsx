@@ -77,10 +77,22 @@ describe("Playbook library", () => {
     const categorySelect = screen.getByRole("dialog").querySelector('select[aria-label="Tactic type"]');
     fireEvent.change(categorySelect, { target: { value: "clutch" } });
     expect(categorySelect.value).toBe("clutch");
-    fireEvent.change(screen.getByLabelText("Custom tags"), { target: { value: "late retake, saved" } });
+    fireEvent.change(screen.getByLabelText("Custom tags"), { target: { value: "late retake, saved, SAVED" } });
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
     await waitFor(() => expect(API.patch).toHaveBeenCalledWith("/tactical/tactics/spirit/classification", expect.objectContaining({
       category: "clutch", site: "A", utility: ["smoke"], result: "win", tags: ["late retake", "saved"],
     })));
+  });
+  it("prevents classification saves that exceed the backend tag limit", async () => {
+    show();
+    await screen.findByText("Spirit A Split");
+    fireEvent.click(screen.getByLabelText("Actions Spirit A Split"));
+    fireEvent.click(screen.getByText("Edit classification"));
+    fireEvent.change(screen.getByLabelText("Custom tags"), {
+      target: { value: Array.from({ length: 21 }, (_, index) => `tag-${index}`).join(", ") },
+    });
+    expect(screen.getByRole("alert").textContent).toContain("20 unique tags");
+    expect(screen.getByRole("button", { name: "Confirm" }).disabled).toBe(true);
+    expect(API.patch).not.toHaveBeenCalled();
   });
 });

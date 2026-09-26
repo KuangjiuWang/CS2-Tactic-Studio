@@ -14,6 +14,13 @@ import { povSecondsToTick, tickToPovSeconds } from "./povClock";
 import TacticalMultiView from "./TacticalMultiView";
 import "./tacticalPlaybook.css";
 
+function normalizeDemoPath(path) {
+  const raw = String(path || "").replaceAll("\\", "/");
+  const isUncPath = raw.startsWith("//");
+  const normalized = `${isUncPath ? "/" : ""}${raw.replace(/\/{2,}/g, "/")}`.replace(/\/$/, "");
+  return /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
 function Viewer({ initialTactic = null }) {
   const t = useT();
   const shell = useAppShell();
@@ -33,6 +40,7 @@ function Viewer({ initialTactic = null }) {
   const [sourceDemoAvailable, setSourceDemoAvailable] = useState(initialTactic?.source_demo_available !== false);
   const prepareLock = useRef(false);
   const autoSaveBatchRef = useRef(null);
+  const recordingContextRef = useRef(0);
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -84,23 +92,39 @@ function Viewer({ initialTactic = null }) {
     const id = initialTactic?.metadata?.pov_batch_id;
     if (!id) return;
     let active = true;
-    API.get(`/tactical/prepare-povs/${id}`).then(({ data }) => { if (active) setBatch(data); })
-      .catch((reason) => { if (active) setError(String(reason?.response?.data?.detail || reason.message)); });
+    const recordingContext = recordingContextRef.current;
+    API.get(`/tactical/prepare-povs/${id}`).then(({ data }) => {
+      if (active && recordingContextRef.current === recordingContext) setBatch(data);
+    })
+      .catch((reason) => {
+        if (active && recordingContextRef.current === recordingContext) setError(String(reason?.response?.data?.detail || reason.message));
+      });
     return () => { active = false; };
   }, [initialTactic]);
 
   useEffect(() => {
     if (!batch?.id || ["Complete", "Failed"].includes(batch.status)) return undefined;
+    let active = true;
     const poll = setInterval(async () => {
       try {
         const { data } = await API.get(`/tactical/prepare-povs/${batch.id}`);
-        setBatch(data);
+        if (active) setBatch(data);
       } catch (reason) {
-        setError(String(reason?.response?.data?.detail || reason.message));
+        if (active) setError(String(reason?.response?.data?.detail || reason.message));
       }
     }, 1000);
-    return () => clearInterval(poll);
+    return () => { active = false; clearInterval(poll); };
   }, [batch?.id, batch?.status]);
+
+  const resetRecordingContext = () => {
+    recordingContextRef.current += 1;
+    autoSaveBatchRef.current = null;
+    setSavedTactic(null);
+    setBatch(null);
+    setAutoSaveState({ status: "idle", batchId: null, error: "" });
+    setError("");
+    setMultiView(false);
+  };
 
   const createDraftTactic = async (fallbackName = defaultTacticName) => {
     const { data } = await API.post("/tactical/tactics", {
@@ -230,11 +254,15 @@ function Viewer({ initialTactic = null }) {
 
   const persistCompletedBatch = useCallback(async (target = batch) => {
     if (target?.status !== "Complete" || target.players?.length !== 5 || target.players.some((player) => player.status !== "Complete")) return;
+    if (Number(target.round_number) !== actualRound
+      || String(target.side || "").toUpperCase() !== String(side).toUpperCase()
+      || normalizeDemoPath(target.demo_path) !== normalizeDemoPath(demoPath)) return;
     if (target.id === savedTactic?.metadata?.pov_batch_id) {
       setAutoSaveState({ status: "saved", batchId: target.id, error: "" });
       return;
     }
     if (autoSaveBatchRef.current === target.id) return;
+    const recordingContext = recordingContextRef.current;
     autoSaveBatchRef.current = target.id;
     setAutoSaveState({ status: "saving", batchId: target.id, error: "" });
     setError("");
@@ -250,10 +278,12 @@ function Viewer({ initialTactic = null }) {
           selection: { demo_path: demoPath, analysis_workspace: workspace, round_number: actualRound, side },
         }));
       }
+      if (recordingContextRef.current !== recordingContext) return;
       setSavedTactic(data);
       setTacticName(data.name);
       setAutoSaveState({ status: "saved", batchId: target.id, error: "" });
     } catch (reason) {
+      if (recordingContextRef.current !== recordingContext) return;
       autoSaveBatchRef.current = null;
       const detail = reason?.response?.data?.detail;
       setAutoSaveState({ status: "failed", batchId: target.id, error: typeof detail === "object" ? detail.message || JSON.stringify(detail) : String(detail || reason.message) });
@@ -416,13 +446,26 @@ function Viewer({ initialTactic = null }) {
     if (selected === "2d") setPlaying(next);
   }, [selected]);
 
+  const changeRound = (value) => {
+    resetRecordingContext();
+    setRoundNumber(Number(value));
+  };
+  const changeSide = (value) => {
+    resetRecordingContext();
+    setSide(value);
+    setSelected("2d");
+  };
+  const recordingContextLocked = preparing
+    || (batch && !["Complete", "Failed"].includes(batch.status))
+    || ["saving", "failed"].includes(autoSaveState.status);
+
   if (!workspace || !demoPath || !rounds.length) {
     return <div className="p-8 text-cs2-text-primary"><p>{t("playbook.sourceMissing")}</p><Link to="/analysis">{t("playbook.goAnalysis")}</Link> · <Link to="/tactics">{t("playbook.back")}</Link></div>;
   }
 
   return <div className="tactical-workspace" data-testid="tactical-playbook">
     <header className="tactical-header">
-      <div className="tactical-round-controls"><select aria-label={t("playbook.round")} value={actualRound} onChange={(event) => { setSavedTactic(null); setAutoSaveState({ status: "idle", batchId: null, error: "" }); setMultiView(false); setRoundNumber(Number(event.target.value)); }}>{rounds.map((row) => <option key={row.round_number} value={row.round_number}>R{row.round_number}</option>)}</select><select aria-label={t("playbook.side")} value={side} onChange={(event) => { setSavedTactic(null); setAutoSaveState({ status: "idle", batchId: null, error: "" }); setSide(event.target.value); setBatch(null); setSelected("2d"); setMultiView(false); }}>{["T", "CT"].map((value) => <option key={value} value={value}>{value}</option>)}</select></div>
+      <div className="tactical-round-controls"><select aria-label={t("playbook.round")} value={actualRound} disabled={recordingContextLocked} onChange={(event) => changeRound(event.target.value)}>{rounds.map((row) => <option key={row.round_number} value={row.round_number}>R{row.round_number}</option>)}</select><select aria-label={t("playbook.side")} value={side} disabled={recordingContextLocked} onChange={(event) => changeSide(event.target.value)}>{["T", "CT"].map((value) => <option key={value} value={value}>{value}</option>)}</select></div>
       <div className="tactical-match">
         <div className="tactical-score"><strong>{workspace.team_a_name || "Team A"}</strong><span>{activeRound?.team_a_score_before ?? "–"} : {activeRound?.team_b_score_before ?? "–"}</span><strong>{workspace.team_b_name || "Team B"}</strong></div>
         <div className="tactical-match-meta">{mapLabel} <span>│</span> R{actualRound} <span>│</span> {side} {t("playbook.viewer1")}</div>

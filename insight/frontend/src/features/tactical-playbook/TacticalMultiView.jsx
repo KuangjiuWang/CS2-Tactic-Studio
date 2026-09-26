@@ -6,6 +6,7 @@ import { tickToPovSeconds, povSecondsToTick } from "./povClock";
 export default function TacticalMultiView({ players, batch, selected, selectView, tick, tickRate, playing, speed, onPlayhead }) {
   const t = useT();
   const videos = useRef(new Map());
+  const videoRefCallbacks = useRef(new Map());
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState !== "hidden");
   const clips = useMemo(() => players.map((player, index) => ({
     player,
@@ -14,6 +15,25 @@ export default function TacticalMultiView({ players, batch, selected, selectView
   })), [batch?.players, players]);
   const leader = clips.find(({ index, pov }) => String(index) === selected && pov?.status === "Complete")
     || clips.find(({ pov }) => pov?.status === "Complete");
+
+  const videoRefFor = (index) => {
+    if (!videoRefCallbacks.current.has(index)) {
+      videoRefCallbacks.current.set(index, (element) => {
+        if (element) videos.current.set(index, element);
+        else {
+          videos.current.get(index)?.pause();
+          videos.current.delete(index);
+        }
+      });
+    }
+    return videoRefCallbacks.current.get(index);
+  };
+
+  useEffect(() => () => {
+    videos.current.forEach((video) => video.pause());
+    videos.current.clear();
+    videoRefCallbacks.current.clear();
+  }, []);
 
   useEffect(() => {
     clips.forEach(({ index, pov }) => {
@@ -49,7 +69,7 @@ export default function TacticalMultiView({ players, batch, selected, selectView
       const complete = pov?.status === "Complete" && pov.proxy_url;
       return <button type="button" key={player.steam_id64 || player.name} className={`tactical-multiview-tile ${selected === String(index) ? "is-focused" : ""}`} aria-pressed={selected === String(index)} onClick={() => selectView(String(index))}>
         <span className="tactical-multiview-video">{complete
-          ? <video data-testid={`multiview-pov-${index + 1}`} ref={(element) => { if (element) videos.current.set(index, element); else videos.current.delete(index); }} muted playsInline preload="metadata" src={`${API_BASE_URL}${pov.proxy_url}`} onLoadedMetadata={(event) => { const video = event.currentTarget; video.muted = true; const target = tickToPovSeconds(tick, pov.coverage_start_tick, tickRate, video.duration || Infinity); video.currentTime = target; if (playing && pageVisible) void video.play()?.catch(() => {}); }} onTimeUpdate={leader?.index === index ? (event) => onPlayhead(povSecondsToTick(event.currentTarget.currentTime, pov.coverage_start_tick, tickRate)) : undefined} />
+          ? <video data-testid={`multiview-pov-${index + 1}`} ref={videoRefFor(index)} muted playsInline preload="metadata" src={`${API_BASE_URL}${pov.proxy_url}`} onLoadedMetadata={(event) => { const video = event.currentTarget; video.muted = true; const target = tickToPovSeconds(tick, pov.coverage_start_tick, tickRate, video.duration || Infinity); video.currentTime = target; if (playing && pageVisible) void video.play()?.catch(() => {}); }} onTimeUpdate={leader?.index === index ? (event) => onPlayhead(povSecondsToTick(event.currentTarget.currentTime, pov.coverage_start_tick, tickRate)) : undefined} />
           : <span className="tactical-multiview-status">{pov?.status || t("playbook.waiting")}</span>}</span>
         <span className="tactical-multiview-name"><strong>{index + 1}. {player.name}</strong><small>{pov?.status || t("playbook.waiting")}</small></span>
       </button>;

@@ -46,6 +46,8 @@ export default {
   "playbook.unknown": "未设置",
   "playbook.customTags": "自定义标签",
   "playbook.tagsHint": "用逗号分隔，例如：二楼夹击, 慢摸",
+  "playbook.tagsTooMany": "最多添加 20 个不同标签。",
+  "playbook.tagTooLong": "每个标签最多 40 个字符。",
   "playbook.round": "回合",
   "playbook.actions": "操作",
   "playbook.open": "打开",

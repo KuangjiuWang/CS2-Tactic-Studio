@@ -80,7 +80,7 @@ describe("TacticalPlaybookPage", () => {
 
   it("automatically saves a completed five-POV batch as map and side", async () => {
     const completedBatch = {
-      id: "completed-batch", status: "Complete",
+      id: "completed-batch", status: "Complete", round_number: 1, side: "T", demo_path: "C:/demos/match.dem",
       players: players.slice(0, 5).map((player) => ({ steam_id64: player.steam_id64, status: "Complete" })),
     };
     API.post.mockResolvedValueOnce({ data: { id: "saved-tactic", name: "Mirage T", metadata: {} } })
@@ -98,7 +98,7 @@ describe("TacticalPlaybookPage", () => {
 
   it("shows automatic save failure and retries the completed batch", async () => {
     const completedBatch = {
-      id: "retry-save-batch", status: "Complete",
+      id: "retry-save-batch", status: "Complete", round_number: 1, side: "T", demo_path: "C:/demos/match.dem",
       players: players.slice(0, 5).map((player) => ({ steam_id64: player.steam_id64, status: "Complete" })),
     };
     API.post.mockResolvedValueOnce({ data: { id: "saved-tactic", name: "Mirage T", metadata: {} } })
@@ -148,7 +148,7 @@ describe("TacticalPlaybookPage", () => {
     show();
     API.post.mockResolvedValueOnce({ data: { id: "saved", name: "Mirage T", metadata: {} } })
       .mockResolvedValueOnce({ data: {
-      id: "batch", status: "Complete", players: players.slice(0, 5).map((player, index) => ({
+      id: "batch", status: "Complete", round_number: 1, side: "T", demo_path: "C:/demos/match.dem", players: players.slice(0, 5).map((player, index) => ({
         player_name: player.name, steam_id64: player.steam_id64,
         coverage_start_tick: 100 + index * 10, coverage_end_tick: 1000,
         status: "Complete", proxy_url: `/proxy${index}`, stream_url: `/video${index}`,
@@ -178,7 +178,7 @@ describe("TacticalPlaybookPage", () => {
 
   it("shows five synchronized preview streams in the one-click review grid", async () => {
     const completedBatch = {
-      id: "grid-batch", status: "Complete", players: players.slice(0, 5).map((player, index) => ({
+      id: "grid-batch", status: "Complete", round_number: 1, side: "T", demo_path: "C:/demos/match.dem", players: players.slice(0, 5).map((player, index) => ({
         player_name: player.name, steam_id64: player.steam_id64,
         coverage_start_tick: 100 + index * 10, coverage_end_tick: 1000,
         status: "Complete", proxy_url: `/proxy${index}`, stream_url: `/video${index}`,
@@ -193,13 +193,41 @@ describe("TacticalPlaybookPage", () => {
     fireEvent.click(screen.getByTestId("toggle-multiview"));
     expect(await screen.findByTestId("tactical-multiview")).toBeTruthy();
     expect(screen.getAllByTestId(/^multiview-pov-/)).toHaveLength(5);
+    const pauseSpy = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
     const leader = screen.getByTestId("multiview-pov-1");
     Object.defineProperty(leader, "currentTime", { configurable: true, value: 3, writable: true });
     fireEvent.timeUpdate(leader);
     expect(screen.getByText(/Tick 292/)).toBeTruthy();
+    expect(pauseSpy).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Single POV" }));
     expect(screen.queryByTestId("tactical-multiview")).toBeNull();
+    expect(pauseSpy).toHaveBeenCalledTimes(5);
     expect(screen.getByTestId("pov-1")).toBeTruthy();
+    pauseSpy.mockRestore();
+  });
+
+  it("ignores a POV batch response after the selected round changes", async () => {
+    let resolveBatch;
+    const oldBatch = {
+      id: "old-round-batch", status: "Complete", round_number: 1, side: "T", demo_path: "C:/demos/match.dem",
+      players: players.slice(0, 5).map((player) => ({ steam_id64: player.steam_id64, status: "Complete" })),
+    };
+    const tactic = {
+      id: "saved-tactic", name: "Mirage T", map_name: "de_mirage", side: "T", round_number: 1,
+      source_demo_path: "C:/demos/match.dem", source_demo_available: true,
+      metadata: { analysis_workspace: workspace, pov_batch_id: oldBatch.id }, steps: [],
+    };
+    API.get.mockImplementation((url) => url.includes("prepare-povs")
+      ? new Promise((resolve) => { resolveBatch = resolve; })
+      : Promise.resolve({ data: tactic }));
+    showSavedTactic();
+    await screen.findByLabelText("Round");
+    await waitFor(() => expect(API.get).toHaveBeenCalledWith("/tactical/prepare-povs/old-round-batch"));
+    fireEvent.change(screen.getByLabelText("Round"), { target: { value: "13" } });
+    resolveBatch({ data: oldBatch });
+    await waitFor(() => expect(screen.getByLabelText("Round").value).toBe("13"));
+    expect(API.post).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("multiview-pov-1")).toBeNull();
   });
 
   it("jumps between nearby match events and tactical steps", async () => {

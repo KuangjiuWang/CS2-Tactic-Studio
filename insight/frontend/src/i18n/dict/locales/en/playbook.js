@@ -46,6 +46,8 @@ export default {
   "playbook.unknown": "Not set",
   "playbook.customTags": "Custom tags",
   "playbook.tagsHint": "Separate with commas, e.g. B split, slow default",
+  "playbook.tagsTooMany": "Use no more than 20 unique tags.",
+  "playbook.tagTooLong": "Each tag can contain at most 40 characters.",
   "playbook.round": "Round",
   "playbook.actions": "Actions",
   "playbook.open": "Open",
