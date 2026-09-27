@@ -125,19 +125,29 @@
 .tactical-stepbar-label { padding-right: 5px; color: var(--cs2-text-secondary); font-weight: 700; }
 .tactical-step-chip { display: flex; align-items: center; gap: 5px; max-width: 140px; height: 25px; padding: 0 8px; border: 1px solid var(--cs2-border); border-radius: 4px; background: var(--cs2-bg-card); white-space: nowrap; }
 .tactical-step-chip.is-selected { border-color: var(--cs2-border); color: var(--cs2-text-secondary); background: var(--cs2-bg-card); }
+.tactical-step-chip.is-active:not(.is-selected) { border-color: var(--cs2-accent); color: var(--cs2-accent); }
+.tactical-step-chip.is-active:not(.is-selected) span { color: var(--cs2-accent); }
 .tactical-step-chip span { overflow: hidden; color: var(--cs2-text-secondary); text-overflow: ellipsis; }
+.tactical-current-step { display:flex; align-items:center; gap:8px; min-height:25px; overflow:hidden; padding:3px 12px; border-bottom:1px solid var(--cs2-border); font-size:10px; }
+.tactical-current-step span,.tactical-current-step small { color:var(--cs2-text-secondary); white-space:nowrap; }
+.tactical-current-step strong { overflow:hidden; color:var(--cs2-text-primary); text-overflow:ellipsis; white-space:nowrap; }
+.tactical-current-step small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tactical-add-step, .tactical-save-button { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 8px; border: 1px solid var(--cs2-border); border-radius: 4px; color: var(--cs2-text-secondary); white-space: nowrap; }
 .tactical-save-button { border-color: var(--cs2-border); color: var(--cs2-text-secondary); }
 .tactical-name-input { width: 130px; height: 26px; }
 .tactical-ruler { display: flex; justify-content: space-between; margin-left: 84px; padding: 4px 14px 3px 0; color: var(--cs2-text-secondary); font-family: monospace; font-size: 10px; }
-.tactical-timeline { display: grid; grid-template-columns: 82px minmax(0, 1fr); min-height: 111px; padding: 0 12px 8px 2px; }
-.tactical-track-labels { display: grid; grid-template-rows: repeat(7, 15px); padding-left: 10px; color: var(--cs2-text-secondary); font-size: 10px; }
+.tactical-timeline { display: grid; grid-template-columns: 82px minmax(0, 1fr); min-height: 141px; padding: 0 12px 8px 2px; }
+.tactical-track-labels { display: grid; grid-template-rows: repeat(9, 15px); padding-left: 10px; color: var(--cs2-text-secondary); font-size: 10px; }
 .tactical-track-labels span:nth-child(1) { color: var(--cs2-text-secondary); }.tactical-track-labels span:nth-child(2) { color: var(--cs2-text-secondary); }
 .tactical-track-canvas { position: relative; min-width: 0; background: repeating-linear-gradient(to right, transparent 0, transparent calc(10% - 1px), var(--cs2-bg-card) calc(10% - 1px), var(--cs2-bg-card) 10%); }
 .tactical-track-row { position: relative; height: 15px; border-top: 1px solid var(--cs2-border); }
 .tactical-track-row:last-of-type { border-bottom: 1px solid var(--cs2-border); }
 .tactical-marker { position: absolute; z-index: 2; top: 3px; width: 8px; height: 8px; transform: translateX(-50%) rotate(45deg); border: 1px solid var(--cs2-border); border-radius: 1px; background: currentColor; }
 .tactical-marker.tactical-tone-t { color: var(--cs2-text-secondary); }.tactical-marker.tactical-tone-ct { color: var(--cs2-text-secondary); }.tactical-marker.tactical-tone-smoke { color: var(--cs2-text-secondary); }.tactical-marker.tactical-tone-flash { color: var(--cs2-text-secondary); }.tactical-marker.tactical-tone-fire { color: var(--cs2-text-secondary); }.tactical-marker.tactical-tone-bomb { color: var(--cs2-text-secondary); }.tactical-marker.tactical-tone-kill { color: var(--cs2-text-secondary); }
+.tactical-marker.tactical-tone-death { color:var(--cs2-fail); }.tactical-marker.is-death { border-radius:50%; }
+.tactical-step-marker { position:absolute; z-index:2; top:1px; min-width:13px; height:12px; transform:translateX(-50%); padding:0 2px; border:1px solid var(--cs2-accent); border-radius:3px; color:var(--cs2-accent); background:var(--cs2-bg-card); font-size:8px; line-height:10px; }
+.tactical-step-marker.is-active { color:var(--cs2-text-on-accent); background:var(--cs2-accent); box-shadow:0 0 5px color-mix(in srgb,var(--cs2-accent) 50%,transparent); }
+.tactical-step-marker.is-selected:not(.is-active) { box-shadow:0 0 0 1px var(--cs2-text-primary); }
 .tactical-playhead { position: absolute; z-index: 3; top: -4px; bottom: 0; width: 2px; background: var(--cs2-bg-card); pointer-events: none; box-shadow: 0 0 5px var(--cs2-border); }
 .tactical-playhead::before { position: absolute; top: -2px; left: -4px; width: 10px; height: 8px; border-radius: 2px; background: var(--cs2-bg-card); content: ""; }
 .tactical-track-canvas > input[type="range"] { position: absolute; z-index: 1; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: crosshair; }
@@ -212,6 +222,8 @@
 .tactical-workspace .tactical-marker.tactical-tone-fire { color:var(--cs2-accent); }
 .tactical-workspace .tactical-marker.tactical-tone-bomb { color:var(--cs2-amber-on-surface); }
 .tactical-workspace .tactical-marker.tactical-tone-kill { color:var(--cs2-fail); }
+.tactical-workspace .tactical-marker.tactical-tone-death { color:var(--cs2-fail); }
+.tactical-workspace .tactical-step-marker.is-active { color:var(--cs2-text-on-accent); }
 @media(max-width:1400px) { .tactical-body { grid-template-columns:130px minmax(0,1fr); } }
 @media(max-width:1000px) { .tactical-body { grid-template-columns:110px minmax(0,1fr); }.tactical-stage { grid-template-columns:minmax(0,2.3fr) minmax(240px,1fr); } }
 @media(max-width:780px) { .tactical-stage.is-multiview { grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(0,1fr); }.tactical-stage.is-multiview .tactical-video-pane { grid-row:1; }.tactical-multiview { grid-template-columns:repeat(2,minmax(0,1fr)); grid-template-rows:repeat(3,minmax(0,1fr)); }.tactical-jump-button { padding:0 4px; font-size:0; }.tactical-jump-button::first-letter { font-size:12px; } }

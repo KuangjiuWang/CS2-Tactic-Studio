@@ -5,17 +5,17 @@ The Tauri app checks the latest stable GitHub Release for a signed `latest.json`
 Build a new version from `frontend` with:
 
 ```powershell
-pnpm run desktop:build:ver -- 1.2.2
+pnpm run desktop:build:ver -- 1.2.3
 ```
 
 The build stages the installer, its updater signature and manifest in `frontend/src-tauri/target/release/bundle/nsis`. Publish these with a SHA-256 checksum:
 
-- `CS2.Tactic.Studio_1.2.2_x64-setup.exe`
-- `CS2.Tactic.Studio_1.2.2_x64-setup.exe.sig`
+- `CS2.Tactic.Studio_1.2.3_x64-setup.exe`
+- `CS2.Tactic.Studio_1.2.3_x64-setup.exe.sig`
 - `latest.json`
-- `CS2.Tactic.Studio_1.2.2_x64-setup.exe.sha256`
+- `CS2.Tactic.Studio_1.2.3_x64-setup.exe.sha256`
 
-Publish all four assets on the stable GitHub Release tagged `v1.2.2`. The manifest URL and asset name must match that tag and the uploaded installer. A different version requires a fresh build and a fresh signature. Do not attach an unsigned installer to a signed manifest.
+Publish all four assets on the stable GitHub Release tagged `v1.2.3`. The manifest URL and asset name must match that tag and the uploaded installer. A different version requires a fresh build and a fresh signature. Do not attach an unsigned installer to a signed manifest.
 
 The private updater key for this checkout is stored outside the repository at `%USERPROFILE%\.tauri\cs2-tactic-studio.key`. Back it up securely; the matching public key is committed in `frontend/src-tauri/tauri.conf.json`. Future signed releases must use the same private key, or installed clients will reject them. This signature is separate from Windows Authenticode signing.
 

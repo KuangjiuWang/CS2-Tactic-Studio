@@ -1,20 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useT } from "../../i18n/useT";
 import { API_BASE_URL } from "../../api/api";
-import { tickToPovSeconds } from "./povClock";
+import { syncPovVideo } from "./povPlayback";
 
 function syncPreview(video, pov, tick, tickRate, playing, speed, forceSeek = false) {
-  video.muted = true;
-  video.playbackRate = Number(speed) || 1;
-  if (forceSeek || video.readyState >= 1) {
-    const target = tickToPovSeconds(tick, pov.coverage_start_tick, tickRate, video.duration || Infinity);
-    if (forceSeek || Math.abs(video.currentTime - target) > (playing ? 0.75 : 0.08)) video.currentTime = target;
-  }
-  if (playing) {
-    if (video.paused) {
-      try { void video.play()?.catch(() => {}); } catch { /* A preview may be blocked before it has a decodable frame. */ }
-    }
-  } else if (!video.paused) video.pause();
+  syncPovVideo(video, pov, {
+    tick, tickRate, playing, speed, forceSeek, muted: true, role: "follower",
+  });
 }
 
 export default function POVSelector({ players, batch, selected, selectView, tick, tickRate, playing, speed }) {

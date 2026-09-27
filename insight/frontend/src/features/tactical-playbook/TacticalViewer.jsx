@@ -10,7 +10,9 @@ import { desktopBridge } from "../../desktop/desktopBridge.js";
 import { useAppShell } from "../../context/AppShellContext";
 import { useT } from "../../i18n/useT";
 import Demo2DReplayPreview from "../demo-analysis/replay/Demo2DReplayPreview";
-import { povSecondsToTick, tickToPovSeconds } from "./povClock";
+import { povSecondsToTick } from "./povClock";
+import { syncPovVideo } from "./povPlayback";
+import { activeTacticStep, orderTacticSteps } from "./timelineModel";
 import TacticalMultiView from "./TacticalMultiView";
 import "./tacticalPlaybook.css";
 
@@ -96,6 +98,11 @@ function Viewer({ initialTactic = null }) {
     .filter((event) => Number(event?.tick) >= startTick && Number(event?.tick) <= endTick)
     .sort((left, right) => Number(left.tick) - Number(right.tick)), [activeRound, startTick, endTick]);
   const visibleEvents = useMemo(() => roundEvents.filter((event) => ["kill", "grenade", "plant", "defuse", "explode", "bomb_pickup", "bomb_drop"].includes(event.type)), [roundEvents]);
+  const orderedSteps = useMemo(() => orderTacticSteps(savedTactic?.steps), [savedTactic?.steps]);
+  const selectedStep = savedTactic?.steps?.find((step) => step.id === selectedStepId);
+  const activeStep = activeTacticStep(orderedSteps, tick);
+  const annotationStep = activeStep || selectedStep || null;
+  const canEditCurrentAnnotations = Boolean(selectedStep && annotationStep?.id === selectedStep.id);
   const mapLabel = String(workspace?.map_name || "").replace(/^de_/, "").replace(/^./, (letter) => letter.toUpperCase());
   const defaultTacticName = `${mapLabel || workspace?.map_name || "CS2"} ${side}`;
 
@@ -363,16 +370,15 @@ function Viewer({ initialTactic = null }) {
     }
   };
 
-  const selectedStep = savedTactic?.steps?.find((step) => step.id === selectedStepId);
   const persistAnnotations = async (annotations) => {
-    if (!savedTactic || !selectedStep) return;
+    if (!savedTactic || !selectedStep || !canEditCurrentAnnotations) return;
     const { data } = await API.put(`/tactical/tactics/${savedTactic.id}/steps/${selectedStep.id}`, {
       title: selectedStep.title, note: selectedStep.note, annotations,
     });
     setSavedTactic((current) => ({ ...current, steps: current.steps.map((step) => step.id === data.id ? data : step) }));
   };
   const commitAnnotation = async (annotation) => {
-    if (!selectedStep) return;
+    if (!selectedStep || !canEditCurrentAnnotations) return;
     const previous = selectedStep.annotations || [];
     setAnnotationUndo((items) => [...items, previous]);
     setAnnotationRedo([]);
@@ -380,7 +386,7 @@ function Viewer({ initialTactic = null }) {
     catch (reason) { setError(String(reason?.response?.data?.detail || reason.message)); }
   };
   const removeAnnotation = async (id) => {
-    if (!selectedStep) return;
+    if (!selectedStep || !canEditCurrentAnnotations) return;
     const previous = selectedStep.annotations || [];
     setAnnotationUndo((items) => [...items, previous]);
     setAnnotationRedo([]);
@@ -388,7 +394,7 @@ function Viewer({ initialTactic = null }) {
     catch (reason) { setError(String(reason?.response?.data?.detail || reason.message)); }
   };
   const changeAnnotationHistory = async (direction) => {
-    if (!selectedStep) return;
+    if (!selectedStep || !canEditCurrentAnnotations) return;
     const source = direction === "undo" ? annotationUndo : annotationRedo;
     if (!source.length) return;
     const next = source.at(-1);
@@ -413,7 +419,16 @@ function Viewer({ initialTactic = null }) {
     const next = Math.max(startTick, Math.min(endTick, Math.round(Number(nextTick) || startTick)));
     setTick(next);
     setReplaySeek(next);
-    if (selectedPov && videoRef.current) videoRef.current.currentTime = tickToPovSeconds(next, selectedPov.coverage_start_tick, tickRate, videoRef.current.duration || Infinity);
+    if (selectedPov && videoRef.current) syncPovVideo(videoRef.current, selectedPov, {
+      tick: next, tickRate, playing, speed, role: "leader", forceSeek: true,
+    });
+  };
+  const selectStep = (step) => {
+    if (!step) return;
+    setSelectedStepId(step.id);
+    setStepTitle(step.title || "");
+    setStepNote(step.note || "");
+    seekToTick(step.tick);
   };
   const jumpToAdjacentEvent = (direction) => {
     const events = [...visibleEvents].sort((left, right) => Number(left.tick) - Number(right.tick));
@@ -422,7 +437,6 @@ function Viewer({ initialTactic = null }) {
       : [...events].reverse().find((event) => Number(event.tick) < tick - 1);
     if (next) seekToTick(next.tick);
   };
-  const orderedSteps = [...(savedTactic?.steps || [])].sort((left, right) => Number(left.tick) - Number(right.tick));
   const jumpToAdjacentStep = (direction) => {
     if (!orderedSteps.length) return;
     const index = orderedSteps.findIndex((step) => step.id === selectedStepId);
@@ -432,10 +446,7 @@ function Viewer({ initialTactic = null }) {
         ? orderedSteps.find((step) => Number(step.tick) > tick)
         : [...orderedSteps].reverse().find((step) => Number(step.tick) < tick);
     if (!next) return;
-    setSelectedStepId(next.id);
-    setStepTitle(next.title || "");
-    setStepNote(next.note || "");
-    seekToTick(next.tick);
+    selectStep(next);
   };
   const hasPreviousEvent = visibleEvents.some((event) => Number(event.tick) < tick - 1);
   const hasNextEvent = visibleEvents.some((event) => Number(event.tick) > tick + 1);
@@ -457,11 +468,10 @@ function Viewer({ initialTactic = null }) {
     const video = videoRef.current;
     if (!video || !selectedPov || !videoUrl) return;
     const seek = () => {
-      const seconds = tickToPovSeconds(tick, selectedPov.coverage_start_tick, tickRate, video.duration || Infinity);
-      video.currentTime = seconds;
-      video.playbackRate = speed;
+      syncPovVideo(video, selectedPov, {
+        tick, tickRate, playing, speed, role: "leader", forceSeek: true,
+      });
       video.volume = volume;
-      if (playing) void video.play().catch(() => setPlaying(false));
     };
     if (video.readyState >= 1) seek();
     else video.addEventListener("loadedmetadata", seek, { once: true });
@@ -527,11 +537,17 @@ function Viewer({ initialTactic = null }) {
             <button type="button" data-testid="toggle-multiview" aria-pressed={multiView} onClick={() => setMultiView(true)} disabled={!batch?.players?.length}>{t("playbook.view.grid")}</button>
           </div>
           {selected !== "2d" && (multiView
-            ? <TacticalMultiView players={players} batch={batch} selected={selected} selectView={selectView} tick={tick} tickRate={tickRate} playing={playing} speed={speed} onPlayhead={setTick} />
-            : videoUrl ? <video key={videoUrl} ref={videoRef} src={videoUrl} playsInline className="tactical-main-video" onTimeUpdate={(event) => { const nextTick = povSecondsToTick(event.currentTarget.currentTime, selectedPov.coverage_start_tick, tickRate); setTick(nextTick); }} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onRateChange={(event) => setSpeed(event.currentTarget.playbackRate)} onVolumeChange={(event) => setVolume(event.currentTarget.volume)} /> : <div className="tactical-video-empty"><span>{selectedPov?.status === "Failed" ? selectedPov.error : t("playbook.viewer8")}</span><small>{batch?.status || "Waiting"}</small></div>)}
+            ? <TacticalMultiView players={players} batch={batch} selected={selected} selectView={selectView} tick={tick} tickRate={tickRate} playing={playing} speed={speed} onPlayhead={setTick} onPlaybackChange={setPlaying} />
+            : videoUrl ? <video key={videoUrl} ref={videoRef} src={videoUrl} playsInline className="tactical-main-video"
+              onTimeUpdate={(event) => { const nextTick = povSecondsToTick(event.currentTarget.currentTime, selectedPov.coverage_start_tick, tickRate, selectedPov.coverage_end_tick); setTick(nextTick); }}
+              onEnded={(event) => {
+                setTick(povSecondsToTick(event.currentTarget.currentTime, selectedPov.coverage_start_tick, tickRate, selectedPov.coverage_end_tick));
+                setPlaying(false);
+              }}
+              onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onRateChange={(event) => setSpeed(event.currentTarget.playbackRate)} onVolumeChange={(event) => setVolume(event.currentTarget.volume)} /> : <div className="tactical-video-empty"><span>{selectedPov?.status === "Failed" ? selectedPov.error : t("playbook.viewer8")}</span><small>{batch?.status || "Waiting"}</small></div>)}
           {selected !== "2d" && !multiView && <div className="tactical-video-overlay"><span>{selectedPlayer?.name}</span></div>}
         </div>
-        <section className="tactical-radar-pane"><div className="tactical-panel-heading"><strong>{t("playbook.viewer9")}</strong><button onClick={() => selectView(selected === "2d" ? "0" : "2d")} title={t("playbook.expandMap")}><Maximize2 size={14} /></button></div><div className="tactical-radar-canvas"><Demo2DReplayPreview key={`${demoPath}:${actualRound}`} compact workspace={workspace} demoPath={demoPath} players={workspace.players} teamAName={workspace.team_a_name} teamBName={workspace.team_b_name} initialRound={actualRound} externalSeekTick={replaySeek} externalPlayheadTick={selected === "2d" ? null : tick} externalPlaying={playing} externalSpeed={speed} onPlayhead={onReplayTick} onPlaybackChange={onReplayPlaying} annotations={selectedStep?.annotations || []} annotationMode={selectedStep ? annotationMode : "select"} annotationColor={annotationColor} onAnnotationCommit={(item) => void commitAnnotation(item)} onAnnotationDelete={(id) => void removeAnnotation(id)} /></div><div className="tactical-map-legend"><span className="tactical-legend-t">● T</span><span className="tactical-legend-ct">● CT</span><span>☁ {t("playbook.viewer10")}</span><span>✦ {t("playbook.viewer11")}</span></div></section>
+        <section className="tactical-radar-pane"><div className="tactical-panel-heading"><strong>{t("playbook.viewer9")}</strong><button onClick={() => selectView(selected === "2d" ? "0" : "2d")} title={t("playbook.expandMap")}><Maximize2 size={14} /></button></div><div className="tactical-radar-canvas"><Demo2DReplayPreview key={`${demoPath}:${actualRound}`} compact workspace={workspace} demoPath={demoPath} players={workspace.players} teamAName={workspace.team_a_name} teamBName={workspace.team_b_name} initialRound={actualRound} externalSeekTick={replaySeek} externalPlayheadTick={selected === "2d" ? null : tick} externalPlaying={playing} externalSpeed={speed} onPlayhead={onReplayTick} onPlaybackChange={onReplayPlaying} annotations={annotationStep?.annotations || []} annotationMode={canEditCurrentAnnotations ? annotationMode : "select"} annotationColor={annotationColor} onAnnotationCommit={(item) => void commitAnnotation(item)} onAnnotationDelete={(id) => void removeAnnotation(id)} /></div><div className="tactical-map-legend"><span className="tactical-legend-t">● T</span><span className="tactical-legend-ct">● CT</span><span>☁ {t("playbook.viewer10")}</span><span>✦ {t("playbook.viewer11")}</span></div></section>
         <UtilityFeed visibleEvents={visibleEvents} tick={tick} tickRate={tickRate} startTick={startTick} seekToTick={seekToTick} />
       </main>
     </div>
@@ -548,9 +564,10 @@ function Viewer({ initialTactic = null }) {
         {!multiView && <label className="tactical-quality"><input type="checkbox" checked={fullQuality} onChange={(event) => setFullQuality(event.target.checked)} />{t("playbook.viewer15")}</label>}
         {selected !== "2d" && <button type="button" aria-label={povExpanded ? t("playbook.exitFullscreen") : t("playbook.fullscreen")} className="tactical-icon-button" onClick={() => setPovExpanded((current) => !current)}>{povExpanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>}
       </div>
-      <div className="tactical-stepbar"><div className="tactical-stepbar-label">{t("playbook.viewer16")}</div><button type="button" className="tactical-step-nav" aria-label={t("playbook.step.previous")} title={t("playbook.step.previous")} disabled={!hasPreviousStep} onClick={() => jumpToAdjacentStep(-1)}>‹</button><button type="button" className="tactical-step-nav" aria-label={t("playbook.step.next")} title={t("playbook.step.next")} disabled={!hasNextStep} onClick={() => jumpToAdjacentStep(1)}>›</button>{orderedSteps.map((step) => <button type="button" key={step.id} onClick={() => { setSelectedStepId(step.id); setStepTitle(step.title); setStepNote(step.note); seekToTick(step.tick); }} className={`tactical-step-chip ${selectedStepId === step.id ? "is-selected" : ""}`}>Step {step.step_number}<span>{step.title}</span></button>)}<button type="button" onClick={() => void captureStep()} disabled={!savedTactic} className="tactical-add-step"><Plus size={14} />{t("playbook.viewer17")}</button><div className="tactical-control-spacer" /><input aria-label="Tactic name" value={tacticName} onChange={(event) => setTacticName(event.target.value)} placeholder={t("playbook.viewer18")} className="tactical-name-input" /><button type="button" className="tactical-save-button" onClick={() => void saveTactic()}><Save size={14} />{t("playbook.viewer19")}</button></div>
-      <TacticTimeline startTick={startTick} endTick={endTick} tickRate={tickRate} tick={tick} visibleEvents={visibleEvents} workspace={workspace} activeRound={activeRound} seekToTick={seekToTick} />
-      {selected === "2d" && <div className="tactical-annotation-toolbar">{["select", "pen", "eraser", "rectangle", "circle", "note", "line", "arrow", "smoke", "flash", "he", "molotov", "c4"].map((mode) => <button type="button" key={mode} disabled={mode !== "select" && !selectedStep} onClick={() => setAnnotationMode(mode)} className={annotationMode === mode ? "is-selected" : ""}>{t(`playbook.annotation.${mode}`)}</button>)}<button type="button" aria-label={t("playbook.colorCt")} onClick={() => setAnnotationColor("#38bdf8")}>CT</button><button type="button" aria-label={t("playbook.colorT")} onClick={() => setAnnotationColor("#fbbf24")}>T</button>{annotationMode === "note" && <input aria-label={t("playbook.annotationText")} value={annotationText} onChange={(event) => setAnnotationText(event.target.value)} placeholder={t("playbook.viewer24")} />}<button type="button" disabled={!annotationUndo.length} onClick={() => void changeAnnotationHistory("undo")}>↶</button><button type="button" disabled={!annotationRedo.length} onClick={() => void changeAnnotationHistory("redo")}>↷</button><button type="button" disabled={!selectedStep} onClick={() => { if (window.confirm(t("playbook.viewer25"))) { setAnnotationUndo((items) => [...items, selectedStep.annotations || []]); void persistAnnotations([]); } }}>{t("playbook.viewer26")}</button></div>}
+      <div className="tactical-stepbar"><div className="tactical-stepbar-label">{t("playbook.viewer16")}</div><button type="button" className="tactical-step-nav" aria-label={t("playbook.step.previous")} title={t("playbook.step.previous")} disabled={!hasPreviousStep} onClick={() => jumpToAdjacentStep(-1)}>‹</button><button type="button" className="tactical-step-nav" aria-label={t("playbook.step.next")} title={t("playbook.step.next")} disabled={!hasNextStep} onClick={() => jumpToAdjacentStep(1)}>›</button>{orderedSteps.map((step) => <button type="button" key={step.id} onClick={() => selectStep(step)} aria-current={activeStep?.id === step.id ? "step" : undefined} className={`tactical-step-chip ${selectedStepId === step.id ? "is-selected" : ""} ${activeStep?.id === step.id ? "is-active" : ""}`}>Step {step.step_number}<span>{step.title}</span></button>)}<button type="button" onClick={() => void captureStep()} disabled={!savedTactic} className="tactical-add-step"><Plus size={14} />{t("playbook.viewer17")}</button><div className="tactical-control-spacer" /><input aria-label="Tactic name" value={tacticName} onChange={(event) => setTacticName(event.target.value)} placeholder={t("playbook.viewer18")} className="tactical-name-input" /><button type="button" className="tactical-save-button" onClick={() => void saveTactic()}><Save size={14} />{t("playbook.viewer19")}</button></div>
+      {activeStep && <div className="tactical-current-step" data-testid="current-tactic-step" aria-live="polite"><span>{t("playbook.timeline.currentStep")}</span><strong>Step {activeStep.step_number} · {activeStep.title}</strong>{activeStep.note && <small>{activeStep.note}</small>}</div>}
+      <TacticTimeline startTick={startTick} endTick={endTick} tickRate={tickRate} tick={tick} visibleEvents={visibleEvents} steps={orderedSteps} activeStepId={activeStep?.id} selectedStepId={selectedStepId} workspace={workspace} activeRound={activeRound} seekToTick={seekToTick} onSelectStep={selectStep} />
+      {selected === "2d" && <div className="tactical-annotation-toolbar">{["select", "pen", "eraser", "rectangle", "circle", "note", "line", "arrow", "smoke", "flash", "he", "molotov", "c4"].map((mode) => <button type="button" key={mode} disabled={mode !== "select" && !canEditCurrentAnnotations} onClick={() => setAnnotationMode(mode)} className={annotationMode === mode ? "is-selected" : ""}>{t(`playbook.annotation.${mode}`)}</button>)}<button type="button" aria-label={t("playbook.colorCt")} onClick={() => setAnnotationColor("#38bdf8")}>CT</button><button type="button" aria-label={t("playbook.colorT")} onClick={() => setAnnotationColor("#fbbf24")}>T</button>{annotationMode === "note" && <input aria-label={t("playbook.annotationText")} value={annotationText} onChange={(event) => setAnnotationText(event.target.value)} placeholder={t("playbook.viewer24")} />}<button type="button" disabled={!annotationUndo.length || !canEditCurrentAnnotations} onClick={() => void changeAnnotationHistory("undo")}>↶</button><button type="button" disabled={!annotationRedo.length || !canEditCurrentAnnotations} onClick={() => void changeAnnotationHistory("redo")}>↷</button><button type="button" disabled={!canEditCurrentAnnotations} onClick={() => { if (window.confirm(t("playbook.viewer25"))) { setAnnotationUndo((items) => [...items, selectedStep.annotations || []]); void persistAnnotations([]); } }}>{t("playbook.viewer26")}</button></div>}
       {selectedStepId && <div className="tactical-step-edit"><input aria-label="Step title" value={stepTitle} onChange={(event) => setStepTitle(event.target.value)} /><input aria-label="Step note" value={stepNote} onChange={(event) => setStepNote(event.target.value)} /><button type="button" onClick={() => void saveStep()}>{t("playbook.viewer27")}</button><button type="button" onClick={() => void deleteStep()}>{t("playbook.viewer28")}</button></div>}
     </section>
   </div>;

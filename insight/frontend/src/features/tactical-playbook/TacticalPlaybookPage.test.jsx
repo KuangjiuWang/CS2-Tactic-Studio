@@ -16,7 +16,7 @@ vi.mock("../../api/api", () => ({
 vi.mock("../../desktop/desktopBridge.js", () => ({ desktopBridge: desktopBridgeMock }));
 
 vi.mock("../demo-analysis/replay/Demo2DReplayPreview", () => ({
-  default: ({ externalSeekTick, externalPlaying }) => <div data-testid="radar-seek" data-playing={String(externalPlaying)}>{externalSeekTick ?? "none"}</div>,
+  default: ({ externalSeekTick, externalPlaying, annotations = [] }) => <div data-testid="radar-seek" data-annotations={annotations.map((item) => item.id).join(",")} data-playing={String(externalPlaying)}>{externalSeekTick ?? "none"}</div>,
 }));
 
 const players = [
@@ -240,6 +240,37 @@ describe("TacticalPlaybookPage", () => {
     pauseSpy.mockRestore();
   });
 
+  it("moves the multiview clock to another POV when the focused clip ends early", async () => {
+    const pauseSpy = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    const completedBatch = {
+      id: "grid-short-clip-batch", status: "Complete", round_number: 1, side: "T", demo_path: "C:/demos/match.dem",
+      players: players.slice(0, 5).map((player, index) => ({
+        player_name: player.name, steam_id64: player.steam_id64,
+        coverage_start_tick: 100, coverage_end_tick: index === 0 ? 300 : 1000,
+        status: "Complete", proxy_url: `/proxy${index}`, stream_url: `/video${index}`,
+      })),
+    };
+    API.post.mockResolvedValueOnce({ data: { id: "grid-short-tactic", name: "Mirage T", metadata: {} } })
+      .mockResolvedValueOnce({ data: completedBatch });
+    API.get.mockResolvedValue({ data: { id: "grid-short-tactic", name: "Mirage T", metadata: { pov_batch_id: completedBatch.id } } });
+    show();
+    fireEvent.click(screen.getByRole("button", { name: /Generate 5 real POVs/ }));
+    await screen.findByTestId("pov-preview-1");
+    fireEvent.click(screen.getByTestId("toggle-multiview"));
+
+    const shortLeader = await screen.findByTestId("multiview-pov-1");
+    Object.defineProperty(shortLeader, "currentTime", { configurable: true, value: 4, writable: true });
+    fireEvent.timeUpdate(shortLeader);
+    expect(screen.getByText(/Tick 300/)).toBeTruthy();
+
+    const replacementLeader = screen.getByTestId("multiview-pov-2");
+    Object.defineProperty(replacementLeader, "currentTime", { configurable: true, value: 5, writable: true });
+    fireEvent.timeUpdate(replacementLeader);
+    expect(screen.getByText(/Tick 420/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Single POV" }));
+    pauseSpy.mockRestore();
+  });
+
   it("ignores a POV batch response after the selected round changes", async () => {
     let resolveBatch;
     const oldBatch = {
@@ -267,7 +298,9 @@ describe("TacticalPlaybookPage", () => {
   it("jumps between nearby match events and tactical steps", async () => {
     const reviewWorkspace = structuredClone(workspace);
     reviewWorkspace.rounds[0].events = [
-      { type: "kill", tick: 350, actor: "A0" },
+      { type: "kill", tick: 350, actor: "A0", target: "B0" },
+      { type: "grenade", tick: 700, actor: "A1", kind: "hegrenade" },
+      { type: "grenade", tick: 750, actor: "A2", kind: "decoy" },
       { type: "plant", tick: 650, actor: "A1" },
     ];
     API.get.mockResolvedValue({ data: {
@@ -275,24 +308,39 @@ describe("TacticalPlaybookPage", () => {
       source_demo_path: "C:/demos/match.dem", source_demo_available: true,
       metadata: { analysis_workspace: reviewWorkspace },
       steps: [
-        { id: "step-1", step_number: 1, tick: 500, title: "Setup", note: "" },
-        { id: "step-2", step_number: 2, tick: 800, title: "Execute", note: "" },
+        { id: "step-1", step_number: 1, tick: 500, title: "Setup", note: "Hold mid", annotations: [{ id: "step-1-note", type: "note", text: "Hold mid" }] },
+        { id: "step-2", step_number: 2, tick: 800, title: "Execute", note: "Go now", annotations: [{ id: "step-2-arrow", type: "arrow" }] },
       ],
     } });
     showSavedTactic();
     await screen.findByText(/Tick 200/);
+    expect(screen.queryByTestId("current-tactic-step")).toBeNull();
+    expect(screen.getByTestId("timeline-event-death-350-combat")).toBeTruthy();
+    expect(screen.getByTestId("timeline-event-grenade-700-utility")).toBeTruthy();
+    expect(screen.getByTestId("timeline-event-grenade-750-utility")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Next event" }));
     expect(screen.getByText(/Tick 350/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Next event" }));
     expect(screen.getByText(/Tick 650/)).toBeTruthy();
+    expect(screen.getByTestId("current-tactic-step").textContent).toContain("Setup");
+    expect(screen.getByTestId("radar-seek").getAttribute("data-annotations")).toBe("step-1-note");
     fireEvent.click(screen.getByRole("button", { name: "Previous event" }));
     expect(screen.getByText(/Tick 350/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Next step" }));
     expect(screen.getByText(/Tick 500/)).toBeTruthy();
+    expect(screen.getByTestId("radar-seek").getAttribute("data-annotations")).toBe("step-1-note");
     fireEvent.click(screen.getByRole("button", { name: "Next step" }));
     expect(screen.getByText(/Tick 800/)).toBeTruthy();
+    expect(screen.getByTestId("current-tactic-step").textContent).toContain("Execute");
+    expect(screen.getByTestId("radar-seek").getAttribute("data-annotations")).toBe("step-2-arrow");
     fireEvent.click(screen.getByRole("button", { name: "Previous step" }));
     expect(screen.getByText(/Tick 500/)).toBeTruthy();
+    fireEvent.click(screen.getByTestId("timeline-event-plant-650-bomb"));
+    expect(screen.getByText(/Tick 650/)).toBeTruthy();
+    expect(screen.getByTestId("current-tactic-step").textContent).toContain("Setup");
+    fireEvent.click(screen.getByTestId("timeline-step-marker-step-2"));
+    expect(screen.getByText(/Tick 800/)).toBeTruthy();
+    expect(screen.getByTestId("current-tactic-step").textContent).toContain("Execute");
   });
 
   it("relinks an older tactic after explicit confirmation when its original file is gone", async () => {
