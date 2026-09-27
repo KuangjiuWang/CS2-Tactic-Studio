@@ -16,6 +16,7 @@ function parseTags(value) {
 export default function PlaybookDialog({ dialog, folders, close, submit, busy }) {
   const t = useT(), ref = useRef(null);
   const [name, setName] = useState(dialog.item?.name || "");
+  const [deletePovVideos, setDeletePovVideos] = useState(false);
   const [selected, setSelected] = useState(folderIds(dialog.item || {}));
   const [parent, setParent] = useState(dialog.item?.parent_id || "");
   const [classification, setClassification] = useState(() => ({
@@ -23,7 +24,11 @@ export default function PlaybookDialog({ dialog, folders, close, submit, busy })
     ...(dialog.item?.metadata?.classification || {}),
   }));
   const [tagText, setTagText] = useState((dialog.item?.metadata?.classification?.tags || []).join(", "));
-  useEffect(() => { ref.current?.showModal(); }, []);
+  useEffect(() => {
+    const dialogElement = ref.current;
+    if (typeof dialogElement?.showModal === "function") dialogElement.showModal();
+    else dialogElement?.setAttribute("open", "");
+  }, []);
   const forbidden = dialog.action === "move" ? descendants(dialog.item.id, folders) : new Set();
   const isPicker = dialog.action === "addToFolder";
   const isClassifier = dialog.action === "classify";
@@ -31,9 +36,9 @@ export default function PlaybookDialog({ dialog, folders, close, submit, busy })
   const tagsTooMany = tags.length > 20;
   const tagsTooLong = tags.some((tag) => tag.length > 40);
   const setField = (key, value) => setClassification((current) => ({ ...current, [key]: value }));
-  return <dialog ref={ref} className="playbook-dialog" onCancel={(e) => { e.preventDefault(); if (!busy) close(); }}><form onSubmit={(e) => { e.preventDefault(); if (tagsTooMany || tagsTooLong) return; submit({ name, selected, parent: parent || null, classification: { ...classification, tags } }); }}>
+  return <dialog ref={ref} className="playbook-dialog" onCancel={(e) => { e.preventDefault(); if (!busy) close(); }}><form onSubmit={(e) => { e.preventDefault(); if (tagsTooMany || tagsTooLong) return; submit({ name, selected, parent: parent || null, classification: { ...classification, tags }, deletePovVideos }); }}>
     <h2>{t(`playbook.${dialog.action}`)}</h2>
-    {dialog.action === "delete" ? <p>{t(dialog.kind === "folders" ? "playbook.deleteFolderHint" : "playbook.deleteTacticHint")}</p>
+    {dialog.action === "delete" ? <div className="space-y-3"><p>{t(dialog.kind === "folders" ? "playbook.deleteFolderHint" : "playbook.deleteTacticHint")}</p>{dialog.kind === "tactics" && <label className="flex items-start gap-2 rounded-lg border border-cs2-border bg-cs2-bg-input/40 p-3 text-xs text-cs2-text-secondary"><input type="checkbox" className="mt-0.5 accent-red-500" checked={deletePovVideos} onChange={(event) => setDeletePovVideos(event.target.checked)} /><span>{t("playbook.deletePovMedia")}</span></label>}</div>
       : isPicker ? <div className="playbook-picker">{folders.map((folder) => <label key={folder.id}><input type="checkbox" checked={selected.includes(folder.id)} onChange={(e) => setSelected(e.target.checked ? [...selected, folder.id] : selected.filter((id) => id !== folder.id))} />{folderPath(folder, folders)}</label>)}{!folders.length && <p>{t("playbook.folderHint")}</p>}</div>
       : dialog.action === "move" ? <select aria-label={t("playbook.destination")} value={parent} onChange={(e) => setParent(e.target.value)}><option value="">{t("playbook.myFolders")}</option>{folders.filter((folder) => !forbidden.has(folder.id)).map((folder) => <option key={folder.id} value={folder.id}>{folderPath(folder, folders)}</option>)}</select>
       : isClassifier ? <div className="playbook-classification-form">

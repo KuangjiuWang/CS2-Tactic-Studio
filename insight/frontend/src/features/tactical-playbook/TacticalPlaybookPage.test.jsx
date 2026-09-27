@@ -10,7 +10,7 @@ const desktopBridgeMock = vi.hoisted(() => ({ showOpenDialog: vi.fn(), saveTacti
 
 vi.mock("../../api/api", () => ({
   API_BASE_URL: "",
-  default: { get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn() },
+  default: { get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn(), delete: vi.fn() },
 }));
 
 vi.mock("../../desktop/desktopBridge.js", () => ({ desktopBridge: desktopBridgeMock }));
@@ -39,6 +39,7 @@ describe("TacticalPlaybookPage", () => {
     API.post.mockReset();
     API.put.mockReset().mockResolvedValue({ data: { ok: true } });
     API.patch.mockReset();
+    API.delete.mockReset();
     desktopBridgeMock.showOpenDialog.mockReset();
     desktopBridgeMock.saveTacticPackage.mockReset();
     desktopBridgeMock.showItemInFolder.mockReset();
@@ -342,6 +343,24 @@ describe("TacticalPlaybookPage", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Actions Mirage T|操作 Mirage T/ }));
     fireEvent.click(screen.getByRole("button", { name: /Share|分享/ }));
     expect((await screen.findByRole("alert")).textContent).toContain("player 2 full-quality POV video is missing");
+  });
+
+  it("lets the user opt into deleting only the tactic's local POV batch", async () => {
+    API.get.mockResolvedValue({ data: { folders: [], tactics: [{
+      id: "delete-me", name: "Mirage T", map_name: "de_mirage", side: "T", round_number: 3, metadata: {},
+    }] } });
+    API.delete.mockResolvedValue({ data: { ok: true, pov_media: { status: "deleted", files: 12 } } });
+    showLibrary();
+    fireEvent.click(await screen.findByRole("button", { name: /Actions Mirage T|操作 Mirage T/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Delete|删除/ }));
+    const cleanupOption = screen.getByLabelText(/full-quality POV videos|五人 POV 原视频/);
+    expect(cleanupOption.checked).toBe(false);
+    fireEvent.click(cleanupOption);
+    fireEvent.click(screen.getByRole("button", { name: /Confirm|确认/ }));
+    await waitFor(() => expect(API.delete).toHaveBeenCalledWith(
+      "/tactical/tactics/delete-me", { data: { delete_pov_videos: true } },
+    ));
+    expect((await screen.findByRole("status")).textContent).toMatch(/12 local POV files|12 个本地 POV 文件/);
   });
 
   it("uploads a .cstactic package as multipart data while retaining JSON import", async () => {

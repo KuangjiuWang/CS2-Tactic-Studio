@@ -44,7 +44,7 @@ async def _first_pov_is_ready_while_queue_records_next(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "_probe_real_video", lambda _source, _expected: {
         "duration": 10.0, "fps": 60.0,
     })
-    monkeypatch.setattr(api, "_normalize_pov", lambda _source, dest: dest.write_bytes(b"normalized"))
+    monkeypatch.setattr(api, "_normalize_pov", lambda _source, dest, **_kwargs: dest.write_bytes(b"normalized"))
     monkeypatch.setattr(api, "_make_proxy", lambda _source, dest: dest.write_bytes(b"proxy"))
     release_second = asyncio.Event()
     first_emitted = asyncio.Event()
@@ -170,7 +170,7 @@ def test_retry_endpoint_schedules_only_incomplete_players(tmp_path, monkeypatch)
             }
             for index in range(5)
         ]
-        monkeypatch.setattr(api, "_jobs", lambda _selection: rebuilt_jobs)
+        monkeypatch.setattr(api, "_jobs", lambda _selection, **_kwargs: rebuilt_jobs)
         scheduled = asyncio.Event()
         captured = {}
 
@@ -215,7 +215,7 @@ def test_retry_batch_maps_subset_job_to_original_player_slot(tmp_path, monkeypat
         monkeypatch.setattr(api.RecordingRequestDTO, "model_validate", lambda payload: payload)
         monkeypatch.setattr(api, "QueueRecordingRequest", lambda **kwargs: kwargs)
         monkeypatch.setattr(api, "_probe_real_video", lambda _source, _expected: {"duration": 10.0, "fps": 60.0})
-        monkeypatch.setattr(api, "_normalize_pov", lambda _source, dest: dest.write_bytes(b"normalized"))
+        monkeypatch.setattr(api, "_normalize_pov", lambda _source, dest, **_kwargs: dest.write_bytes(b"normalized"))
         monkeypatch.setattr(api, "_make_proxy", lambda _source, dest: dest.write_bytes(b"proxy"))
         job = {
             "request": {"request_id": "retry-player-two"},

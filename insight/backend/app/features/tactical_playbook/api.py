@@ -67,6 +67,25 @@ def _batch_state_path(batch_id: str) -> Path:
     return get_data_dir() / "tactical-povs" / batch_id / "metadata.json"
 
 
+def _delete_pov_batch_media(batch_id: str) -> dict:
+    if len(batch_id) != 32 or any(ch not in "0123456789abcdef" for ch in batch_id):
+        return {"status": "unavailable", "files": 0, "bytes": 0}
+    root = (get_data_dir() / "tactical-povs").resolve()
+    batch_dir = root / batch_id
+    if batch_dir.is_symlink():
+        return {"status": "unsafe_path", "files": 0, "bytes": 0}
+    resolved = batch_dir.resolve()
+    if os.path.normcase(str(resolved.parent)) != os.path.normcase(str(root)):
+        return {"status": "unsafe_path", "files": 0, "bytes": 0}
+    if not resolved.exists():
+        return {"status": "missing", "files": 0, "bytes": 0}
+    files = [path for path in resolved.rglob("*") if not path.is_symlink() and path.is_file()]
+    removed_bytes = sum(path.stat().st_size for path in files)
+    shutil.rmtree(resolved)
+    _batches.pop(batch_id, None)
+    return {"status": "deleted", "files": len(files), "bytes": removed_bytes}
+
+
 def _get_batch(batch_id: str) -> dict | None:
     state = _batches.get(batch_id)
     if state is not None:
@@ -94,6 +113,10 @@ class RoundSelection(BaseModel):
     tactic_id: str | None = None
 
 
+class DeleteTacticRequest(BaseModel):
+    delete_pov_videos: bool = False
+
+
 def _pov_hud_options_for_recording_mode(recording_mode: str) -> dict | None:
     if recording_mode == "advanced_obs":
         # Match the existing advanced Demo playback path while retaining the
@@ -111,14 +134,28 @@ def _canonical_demo_path(path: str) -> str:
     return os.path.normcase(str(Path(path).expanduser().resolve()))
 
 
-def _jobs(selection: RoundSelection) -> list[dict]:
+def _death_card_setting() -> bool:
+    return bool(getattr(load_config(), "tactical_pov_death_card_enabled", True))
+
+
+def _jobs(selection: RoundSelection, *, death_card_enabled: bool | None = None) -> list[dict]:
     try:
+        if death_card_enabled is None:
+            death_card_enabled = _death_card_setting()
         return build_five_pov_jobs(
             selection.demo_path, selection.analysis_workspace,
             selection.round_number, selection.side,
+            death_card_enabled=death_card_enabled,
         )
     except (TacticalRoundError, OSError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+def _death_start_seconds(job: dict, tick_rate: float, start_tick: int | None = None) -> float | None:
+    if not job.get("death_card_enabled") or job.get("death_tick") is None:
+        return None
+    timeline_start = int(start_tick if start_tick is not None else job["coverage_start_tick"])
+    return max(0.0, (int(job["death_tick"]) - timeline_start) / float(tick_rate))
 
 
 def _validate_hlae_ready() -> None:
@@ -188,20 +225,67 @@ def _make_proxy(source: Path, destination: Path) -> None:
         raise ValueError(f"ffmpeg could not encode the POV proxy: {proc.stderr[-500:]}")
 
 
-def _normalize_pov(source: Path, destination: Path) -> None:
+def _death_card_filters(death_start_seconds: float | None) -> list[str]:
+    if death_start_seconds is None:
+        return []
+    start = max(0.0, float(death_start_seconds))
+    enable = f"gte(t,{start:.6f})"
+    windows_dir = Path(os.environ.get("WINDIR") or os.environ.get("SystemRoot") or r"C:\Windows")
+    fonts = (
+        windows_dir / "Fonts" / "arial.ttf",
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
+    )
+    font = next((path for path in fonts if path.is_file()), None)
+    if font:
+        font_value = str(font.resolve()).replace("\\", "/").replace(":", r"\:")
+        font_option = f"fontfile='{font_value}':"
+    else:
+        font_option = "font='Sans':"
+    return [
+        f"drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='{enable}'",
+        f"drawbox=x=iw*0.12:y=ih*0.499:w=iw*0.23:h=2:color=0x961018@0.94:t=fill:enable='{enable}'",
+        f"drawbox=x=iw*0.65:y=ih*0.499:w=iw*0.23:h=2:color=0x961018@0.94:t=fill:enable='{enable}'",
+        f"drawtext={font_option}text='YOU DIED':fontcolor=0x9f1119:fontsize=56:"
+        f"x=(w-text_w)/2:y=(h-text_h)/2:shadowcolor=0x350000@0.65:shadowx=0:shadowy=2:enable='{enable}'",
+    ]
+
+
+def _normalize_pov(
+    source: Path,
+    destination: Path,
+    *,
+    expected_seconds: float | None = None,
+    source_duration: float | None = None,
+    death_start_seconds: float | None = None,
+) -> None:
     """Produce a seekable, WebView-compatible 720p60 source with real sound."""
     try:
         ffmpeg = resolve_ffmpeg_binary(load_config().ffmpeg_path)
     except MontageComposerError as exc:
         raise ValueError(f"ffmpeg is required for tactical POV normalization: {exc}") from exc
-    proc = subprocess.run(
-        [ffmpeg, "-nostdin", "-y", "-i", str(source), "-map", "0:v:0", "-map", "0:a:0",
-         "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,"
-                "pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=60,setsar=1",
+    video_filters = [
+        "scale=1280:720:force_original_aspect_ratio=decrease",
+        "pad=1280:720:(ow-iw)/2:(oh-ih)/2",
+        "fps=60", "setsar=1",
+    ]
+    if expected_seconds is not None and source_duration is not None:
+        missing = max(0.0, expected_seconds - source_duration)
+        if missing > 0.02:
+            video_filters.append(f"tpad=stop_mode=clone:stop_duration={missing:.6f}")
+    video_filters.extend(_death_card_filters(death_start_seconds))
+    command = [
+        ffmpeg, "-nostdin", "-y", "-i", str(source), "-map", "0:v:0", "-map", "0:a:0",
+         "-vf", ",".join(video_filters),
          "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-g", "120",
          "-keyint_min", "120", "-sc_threshold", "0", "-pix_fmt", "yuv420p",
-         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-         "-movflags", "+faststart", str(destination)],
+         "-af", "apad", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+    ]
+    if expected_seconds is not None:
+        command.extend(["-t", f"{expected_seconds:.6f}"])
+    command.extend(["-movflags", "+faststart", str(destination)])
+    proc = subprocess.run(
+        command,
         capture_output=True, text=True, timeout=7200,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
@@ -209,7 +293,16 @@ def _normalize_pov(source: Path, destination: Path) -> None:
         raise ValueError(f"ffmpeg could not normalize the POV: {proc.stderr[-500:]}")
 
 
-def _mux_hlae_capture(video: Path, audio: Path, destination: Path, fps: int = 60) -> None:
+def _mux_hlae_capture(
+    video: Path,
+    audio: Path,
+    destination: Path,
+    fps: int = 60,
+    *,
+    expected_seconds: float | None = None,
+    source_duration: float | None = None,
+    death_start_seconds: float | None = None,
+) -> None:
     """Mux HLAE's real screen render and its separately captured game WAV."""
     try:
         ffmpeg = resolve_ffmpeg_binary(load_config().ffmpeg_path)
@@ -217,14 +310,28 @@ def _mux_hlae_capture(video: Path, audio: Path, destination: Path, fps: int = 60
         raise ValueError(f"FFmpeg is required to mux the HLAE POV and game audio: {exc}") from exc
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(destination.stem + ".partial.mp4")
-    proc = subprocess.run(
-        [str(ffmpeg), "-nostdin", "-y", "-i", str(video), "-i", str(audio),
-         "-map", "0:v:0", "-map", "1:a:0", "-vf",
-         f"scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps={fps},setsar=1",
+    video_filters = [
+        "scale=1280:720:force_original_aspect_ratio=decrease",
+        "pad=1280:720:(ow-iw)/2:(oh-ih)/2",
+        f"fps={fps}", "setsar=1",
+    ]
+    if expected_seconds is not None and source_duration is not None:
+        missing = max(0.0, expected_seconds - source_duration)
+        if missing > 0.02:
+            video_filters.append(f"tpad=stop_mode=clone:stop_duration={missing:.6f}")
+    video_filters.extend(_death_card_filters(death_start_seconds))
+    command = [
+         str(ffmpeg), "-nostdin", "-y", "-i", str(video), "-i", str(audio),
+         "-map", "0:v:0", "-map", "1:a:0", "-vf", ",".join(video_filters),
          "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-g", str(fps * 2),
          "-keyint_min", str(fps * 2), "-sc_threshold", "0", "-pix_fmt", "yuv420p",
-         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-         "-shortest", "-movflags", "+faststart", str(temporary)],
+         "-af", "apad", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+    ]
+    if expected_seconds is not None:
+        command.extend(["-t", f"{expected_seconds:.6f}"])
+    command.extend(["-movflags", "+faststart", str(temporary)])
+    proc = subprocess.run(
+        command,
         capture_output=True, text=True, timeout=7200,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
@@ -287,8 +394,17 @@ async def _run_hlae_batch(
             item["message"] = "Muxing actual HLAE video with its game WAV"
             state["status"] = "Encoding"
             _persist_batch(state)
-            await asyncio.to_thread(_mux_hlae_capture, result["video_path"], result["audio_path"], output)
-            expected = (int(result["end_tick"]) - int(result["start_tick"])) / tick_rate
+            expected = (int(job["coverage_end_tick"]) - int(job["coverage_start_tick"])) / tick_rate
+            source_metadata = await asyncio.to_thread(
+                _probe_real_video, Path(result["video_path"]), expected, False,
+            )
+            await asyncio.to_thread(
+                _mux_hlae_capture,
+                result["video_path"], result["audio_path"], output,
+                expected_seconds=expected,
+                source_duration=float(source_metadata["duration"]),
+                death_start_seconds=_death_start_seconds(job, tick_rate, int(result["start_tick"])),
+            )
             metadata = await asyncio.to_thread(_probe_real_video, output, expected)
             if abs(float(metadata["duration"]) - expected) > max(1.0, expected * 0.1):
                 raise ValueError(
@@ -308,7 +424,10 @@ async def _run_hlae_batch(
                 video_path=str(output),
                 proxy_path=str(proxy),
                 start_tick=int(result["start_tick"]),
-                end_tick=int(result["end_tick"]),
+                end_tick=int(job["coverage_end_tick"]),
+                coverage_end_tick=int(job["coverage_end_tick"]),
+                death_tick=job.get("death_tick"),
+                death_card_enabled=bool(job.get("death_card_enabled")),
                 tick_rate=tick_rate,
                 source="HLAE",
                 stream_url=f"/api/tactical/povs/{batch_id}/{player_index + 1}/video",
@@ -351,12 +470,19 @@ async def _run_batch(
             item["status"] = "Verifying"
             source = Path(str(result.get("output_path") or ""))
             expected = (job["coverage_end_tick"] - job["coverage_start_tick"]) / tick_rate
-            metadata = await asyncio.to_thread(_probe_real_video, source, expected)
+            source_metadata = await asyncio.to_thread(_probe_real_video, source, expected)
             # Keep the upstream recording; tactics own a normalized MP4.
             dest = get_data_dir() / "tactical-povs" / batch_id / f"player{player_index + 1}.mp4"
             dest.parent.mkdir(parents=True, exist_ok=True)
             item["status"] = "Encoding"
-            await asyncio.to_thread(_normalize_pov, source, dest)
+            await asyncio.to_thread(
+                _normalize_pov,
+                source,
+                dest,
+                expected_seconds=expected,
+                source_duration=float(source_metadata["duration"]),
+                death_start_seconds=_death_start_seconds(job, tick_rate),
+            )
             metadata = await asyncio.to_thread(_probe_real_video, dest, expected)
             proxy = dest.with_name(f"player{player_index + 1}-proxy.mp4")
             await asyncio.to_thread(_make_proxy, dest, proxy)
@@ -364,6 +490,9 @@ async def _run_batch(
                 "video_path": str(dest), "proxy_path": str(proxy),
                 "start_tick": job["coverage_start_tick"],
                 "end_tick": job["coverage_end_tick"], "tick_rate": tick_rate,
+                "coverage_end_tick": job["coverage_end_tick"],
+                "death_tick": job.get("death_tick"),
+                "death_card_enabled": bool(job.get("death_card_enabled")),
                 "stream_url": f"/api/tactical/povs/{batch_id}/{player_index + 1}/video",
                 "proxy_url": f"/api/tactical/povs/{batch_id}/{player_index + 1}/proxy",
             })
@@ -459,7 +588,8 @@ async def prepare_povs(selection: RoundSelection):
     global _active_batch
     if _active_batch is not None:
         raise HTTPException(409, "another five-POV batch is running")
-    jobs = _jobs(selection)
+    death_card_enabled = _death_card_setting()
+    jobs = _jobs(selection, death_card_enabled=death_card_enabled)
     if selection.recording_mode == "hlae":
         _validate_hlae_ready()
     tactic = None
@@ -480,11 +610,15 @@ async def prepare_povs(selection: RoundSelection):
         "demo_path": selection.demo_path,
         "side": selection.side.upper(), "tick_rate": selection.analysis_workspace["tick_rate"],
         "recording_mode": selection.recording_mode,
+        "death_card_enabled": death_card_enabled,
         "tactic_id": selection.tactic_id,
         "players": [{
             "player_id": j["player_id"], "player_name": j["player_name"], "steam_id64": j["steam_id64"],
             "coverage_start_tick": j["coverage_start_tick"],
             "coverage_end_tick": j["coverage_end_tick"],
+            "round_end_tick": j["round_end_tick"],
+            "death_tick": j.get("death_tick"),
+            "death_card_enabled": bool(j.get("death_card_enabled")),
             "status": "Waiting", "video_path": None, "attempt": 1,
         } for j in jobs],
     }
@@ -535,7 +669,10 @@ async def retry_failed_povs(batch_id: str, selection: RoundSelection):
         raise HTTPException(409, "retry demo analysis does not match the original POV batch")
 
     retry_selection = selection.model_copy(update={"recording_mode": state.get("recording_mode") or "obs"})
-    rebuilt_jobs = _jobs(retry_selection)
+    rebuilt_jobs = _jobs(
+        retry_selection,
+        death_card_enabled=bool(state.get("death_card_enabled", False)),
+    )
     players = state.get("players") or []
     jobs_by_steam_id = {str(job.get("steam_id64") or ""): job for job in rebuilt_jobs}
     if len(players) != 5 or len(rebuilt_jobs) != 5 or len(jobs_by_steam_id) != 5:
@@ -1007,10 +1144,32 @@ async def delete_folder(folder_id: str):
 
 
 @router.delete("/tactics/{tactic_id}")
-async def delete_tactic(tactic_id: str):
+async def delete_tactic(tactic_id: str, body: DeleteTacticRequest | None = None):
+    store = TacticalStore()
+    delete_media = bool(body and body.delete_pov_videos)
     try:
-        await TacticalStore().delete_tactic(tactic_id)
-        return {"ok": True}
+        tactic = await store.get_tactic(tactic_id)
+        if tactic is None:
+            raise HTTPException(404, "tactic does not exist")
+        batch_id = str((tactic.get("metadata") or {}).get("pov_batch_id") or "")
+        if delete_media and batch_id and batch_id == _active_batch:
+            raise HTTPException(409, "this tactic's POV recording is still running; keep its media or wait for the batch to finish")
+        deletion = await store.delete_tactic(tactic_id)
+        pov_media = {"status": "kept", "files": 0, "bytes": 0}
+        if delete_media:
+            if not batch_id:
+                pov_media["status"] = "missing"
+            elif deletion.get("pov_batch_shared"):
+                pov_media["status"] = "in_use"
+            else:
+                try:
+                    pov_media = await asyncio.to_thread(_delete_pov_batch_media, batch_id)
+                except OSError as exc:
+                    logger.warning("Could not delete tactical POV batch %s: %s", batch_id, exc)
+                    pov_media = {"status": "failed", "files": 0, "bytes": 0, "message": str(exc)}
+        return {"ok": True, "pov_media": pov_media}
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
 

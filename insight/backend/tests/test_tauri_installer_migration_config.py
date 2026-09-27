@@ -16,7 +16,11 @@ def test_derivative_identifier_stays_scoped_and_uses_legacy_upgrade_hook():
     assert config["build"]["beforeBuildCommand"] == "node node_modules/vite/bin/vite.js build"
     assert config["bundle"]["windows"]["nsis"]["installerHooks"] == "./windows/upgrade-hooks.nsh"
     assert not config["bundle"]["createUpdaterArtifacts"]
-    assert "plugins" not in config or "updater" not in config["plugins"]
+    updater = config["plugins"]["updater"]
+    assert updater["endpoints"] == [
+        "https://github.com/KuangjiuWang/CS2-Tactic-Studio/releases/latest/download/latest.json",
+    ]
+    assert updater["pubkey"]
 
 
 def test_installer_hook_covers_electron_upgrade_surfaces():
@@ -87,7 +91,7 @@ def test_versioned_build_rejects_missing_webview2_loader_bundle():
     assert "GNU Tauri build is missing required runtime loader" in script
     assert "NSIS hook does not install WebView2Loader.dll" in script
     assert "validated Windows runtime bundle" in script
-    assert "createUpdaterArtifacts: false" in script
+    assert "buildConfig.bundle = { createUpdaterArtifacts: hasUpdaterSigningKey }" in script
     assert "updater private key not found" in script
     assert "rmSync(updaterSignature)" in script
 

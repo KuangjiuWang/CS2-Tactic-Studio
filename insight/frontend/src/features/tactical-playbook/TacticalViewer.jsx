@@ -61,6 +61,22 @@ function Viewer({ initialTactic = null }) {
   const [annotationRedo, setAnnotationRedo] = useState([]);
   useEffect(() => { setAnnotationUndo([]); setAnnotationRedo([]); }, [selectedStepId]);
   const videoRef = useRef(null);
+  const recordingModeTouched = useRef(false);
+  useEffect(() => {
+    if (initialTactic?.metadata?.pov_batch_id) return undefined;
+    let active = true;
+    API.get("/config").then(({ data }) => {
+      const preferredMode = data?.tactical_pov_default_mode;
+      if (active && !recordingModeTouched.current && ["obs", "advanced_obs", "hlae"].includes(preferredMode)) {
+        setRecordingMode(preferredMode);
+      }
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [initialTactic?.metadata?.pov_batch_id]);
+  const chooseRecordingMode = (mode) => {
+    recordingModeTouched.current = true;
+    setRecordingMode(mode);
+  };
   useEffect(() => {
     if (!povExpanded) return undefined;
     const leaveOnEscape = (event) => {
@@ -486,9 +502,9 @@ function Viewer({ initialTactic = null }) {
       </div>
       <div className="tactical-header-actions">
         <div className="tactical-recording-mode" role="group" aria-label={t("playbook.viewer2")}>
-          <button type="button" data-testid="record-mode-obs" aria-label={t("playbook.recording.normalLabel")} aria-pressed={recordingMode === "obs"} title={t("playbook.recording.normalHint")} disabled={preparing || (batch && !["Complete", "Failed"].includes(batch.status))} className={recordingMode === "obs" ? "is-selected" : ""} onClick={() => setRecordingMode("obs")}>{t("playbook.recording.normalShort")}</button>
-          <button type="button" data-testid="record-mode-advanced-obs" aria-label={t("playbook.recording.advancedLabel")} aria-pressed={recordingMode === "advanced_obs"} title={t("playbook.recording.advancedHint")} disabled={preparing || (batch && !["Complete", "Failed"].includes(batch.status))} className={recordingMode === "advanced_obs" ? "is-selected" : ""} onClick={() => setRecordingMode("advanced_obs")}>{t("playbook.recording.advancedShort")}</button>
-          <button type="button" data-testid="record-mode-hlae" aria-label="HLAE" aria-pressed={recordingMode === "hlae"} title={t("playbook.viewer3")} disabled={preparing || (batch && !["Complete", "Failed"].includes(batch.status))} className={recordingMode === "hlae" ? "is-selected" : ""} onClick={() => setRecordingMode("hlae")}>HLAE</button>
+          <button type="button" data-testid="record-mode-obs" aria-label={t("playbook.recording.normalLabel")} aria-pressed={recordingMode === "obs"} title={t("playbook.recording.normalHint")} disabled={preparing || (batch && !["Complete", "Failed"].includes(batch.status))} className={recordingMode === "obs" ? "is-selected" : ""} onClick={() => chooseRecordingMode("obs")}>{t("playbook.recording.normalShort")}</button>
+          <button type="button" data-testid="record-mode-advanced-obs" aria-label={t("playbook.recording.advancedLabel")} aria-pressed={recordingMode === "advanced_obs"} title={t("playbook.recording.advancedHint")} disabled={preparing || (batch && !["Complete", "Failed"].includes(batch.status))} className={recordingMode === "advanced_obs" ? "is-selected" : ""} onClick={() => chooseRecordingMode("advanced_obs")}>{t("playbook.recording.advancedShort")}</button>
+          <button type="button" data-testid="record-mode-hlae" aria-label="HLAE" aria-pressed={recordingMode === "hlae"} title={t("playbook.viewer3")} disabled={preparing || (batch && !["Complete", "Failed"].includes(batch.status))} className={recordingMode === "hlae" ? "is-selected" : ""} onClick={() => chooseRecordingMode("hlae")}>HLAE</button>
         </div>
         {recordingMode === "hlae" && <span className="tactical-mode-hint">{t("playbook.viewer4")}</span>}
         {batch && ["Complete", "Failed"].includes(batch.status) && batch.players?.some((player) => player.status !== "Complete") && <button type="button" className="tactical-action" onClick={retryFailedPovs} disabled={preparing}>{t("playbook.retryFailedPovs")}</button>}

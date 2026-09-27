@@ -82,3 +82,24 @@ def test_recording_weather_effect_conflicts_with_waxed_material(monkeypatch):
     with pytest.raises(HTTPException) as exc_info:
         _round_trip(monkeypatch, payload)
     assert exc_info.value.status_code == 422
+
+
+def test_tactical_pov_settings_default_and_persist(monkeypatch):
+    defaults = AppConfig(obs=OBSConfig())
+    assert defaults.tactical_pov_default_mode == "obs"
+    assert defaults.tactical_pov_death_card_enabled is True
+
+    payload = config_api.ConfigPayload(
+        tactical_pov_default_mode="hlae",
+        tactical_pov_death_card_enabled=False,
+    )
+    saved = _round_trip(monkeypatch, payload)
+    assert saved.tactical_pov_default_mode == "hlae"
+    assert saved.tactical_pov_death_card_enabled is False
+
+
+def test_tactical_pov_settings_reject_unknown_capture_mode(monkeypatch):
+    initial = AppConfig(obs=OBSConfig(), tactical_pov_default_mode="advanced_obs")
+    payload = config_api.ConfigPayload(tactical_pov_default_mode="unexpected")
+
+    assert _round_trip(monkeypatch, payload, initial=initial).tactical_pov_default_mode == "advanced_obs"

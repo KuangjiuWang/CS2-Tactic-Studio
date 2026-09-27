@@ -52,6 +52,22 @@ def test_five_jobs_expose_real_death_coverage(tmp_path: Path, monkeypatch):
     assert all(job["request"]["target_player"]["steamid64"] for job in jobs)
 
 
+def test_death_card_mode_keeps_all_five_jobs_on_the_same_round_end_tick(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("app.recording.normalizer.read_demo_end_tick", lambda _path: 9000)
+    demo = tmp_path / "match.dem"
+    demo.touch()
+    jobs = build_five_pov_jobs(str(demo), workspace(), 1, "T", death_card_enabled=True)
+    assert len(jobs) == 5
+    assert {job["coverage_end_tick"] for job in jobs} == {4000}
+    assert {job["round_end_tick"] for job in jobs} == {4000}
+    assert jobs[0]["death_tick"] == 2400
+    assert jobs[0]["death_card_enabled"] is True
+    assert jobs[1]["death_card_enabled"] is False
+    assert all(job["request"]["rounds"][0]["target_death_tick"] is None for job in jobs)
+    assert all(job["request"]["options"]["round_compilation_post_round_sec"] == 0 for job in jobs)
+    assert all(job["request"]["options"]["final_round_extra_post_sec"] == 0 for job in jobs)
+
+
 def test_out_of_order_next_round_boundary_cannot_truncate_round(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("app.recording.normalizer.read_demo_end_tick", lambda _path: 9000)
     demo = tmp_path / "match.dem"

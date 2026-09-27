@@ -471,6 +471,8 @@ export default function SettingsPage() {
 
       payload.cs2_path = config.cs2_path ?? "";
       payload.hlae_path = config.hlae_path ?? "";
+      payload.tactical_pov_default_mode = config.tactical_pov_default_mode ?? "obs";
+      payload.tactical_pov_death_card_enabled = config.tactical_pov_death_card_enabled !== false;
       payload.ffmpeg_path = config.ffmpeg_path ?? "";
       payload.montage_encoder = config.montage_encoder ?? "auto";
       payload.ai_mode = !!config.ai_mode;
@@ -696,14 +698,21 @@ export default function SettingsPage() {
   );
 
   return (
-    <div className="flex min-h-0 w-full flex-1 flex-col bg-cs2-bg-dark">
+    <div className="flex min-h-0 w-full flex-1 flex-col bg-cs2-bg-dark" data-testid="settings-workspace">
       {/* Header */}
-      <div className="shrink-0 border-b border-cs2-border/60 px-4 py-3">
-        <div className="flex items-center gap-3">
-          <SettingsIcon className="h-5 w-5 text-cs2-accent" />
+      <div className="shrink-0 border-b border-cs2-border/60 bg-gradient-to-r from-cs2-bg-card/80 via-cs2-bg-dark to-cs2-bg-dark px-4 py-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="flex h-10 w-10 items-center justify-center rounded-xl border border-cs2-accent/25 bg-cs2-accent/10">
+            <SettingsIcon className="h-5 w-5 text-cs2-accent" />
+          </span>
           <div>
             <h1 className="text-lg font-bold tracking-wide text-cs2-text-primary">{t("settings.pageTitle")}</h1>
             <p className="mt-1 text-xs text-cs2-text-muted">{t("settings.pageSubtitle")}</p>
+          </div>
+          <div className="ml-auto hidden items-center gap-2 text-[10px] text-cs2-text-muted lg:flex">
+            <span className="rounded-full border border-cs2-border/70 bg-cs2-bg-input/50 px-2.5 py-1">OBS · {obs.obs_path ? t("settings.configured") : t("settings.autoDetect")}</span>
+            <span className="rounded-full border border-cs2-border/70 bg-cs2-bg-input/50 px-2.5 py-1">HLAE · {config.hlae_path ? t("settings.configured") : t("settings.notConfigured")}</span>
+            <span className="rounded-full border border-cs2-border/70 bg-cs2-bg-input/50 px-2.5 py-1">POV · {t(config.tactical_pov_default_mode === "hlae" ? "settings.povModeHlae" : config.tactical_pov_default_mode === "advanced_obs" ? "settings.povModeAdvancedObs" : "settings.povModeObs")}</span>
           </div>
         </div>
         {/* Search */}
@@ -727,6 +736,7 @@ export default function SettingsPage() {
                 key={tab.key}
                 type="button"
                 onClick={() => setActiveTab(tab.key)}
+                aria-current={active ? "page" : undefined}
                 className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
                   active
                     ? "bg-cs2-accent/15 text-cs2-accent border border-cs2-accent/30"
@@ -752,6 +762,8 @@ export default function SettingsPage() {
               ? "flex min-h-0 flex-1 flex-col"
               : activeTab === "video" && aiObsRecommendationEnabled
                 ? "w-full px-4 pb-24 pt-2 xl:px-6 2xl:px-8"
+                : activeTab === "video"
+                  ? "mx-auto w-full max-w-6xl px-4 pb-24 pt-3 xl:px-6"
                 : "mx-auto max-w-4xl px-4 pb-24 pt-2"
           }
         >
@@ -883,7 +895,7 @@ export default function SettingsPage() {
 
               {/* Paths (CS2 + application and LiteCut data directories) */}
               {activeTab === "paths" && (
-              <SectionCard title={t("settings.sectionPaths")} hint={t("settings.sectionPathsHint")} search={search && !matches(t("settings.sectionPaths") + " " + t("settings.labelCs2Path") + " " + t("settings.labelHlaePath") + " " + t("settings.labelLiteCutStorage") + " " + t("settings.labelDemoCachePath") + " " + t("settings.labelDataDirectory") + " " + t("settings.labelLogDirectory"))}>
+              <SectionCard title={t("settings.sectionPaths")} hint={t("settings.sectionPathsHint")} search={search && !matches(t("settings.sectionPaths") + " " + t("settings.labelCs2Path") + " " + t("settings.labelLiteCutStorage") + " " + t("settings.labelDemoCachePath") + " " + t("settings.labelDataDirectory") + " " + t("settings.labelLogDirectory"))}>
                 <FieldRow label={t("settings.labelCs2Path")} hint={t("settings.hintCs2Path")} search={search && !matches(t("settings.labelCs2Path") + " " + (config.cs2_path ?? ""))}>
                   <PathPicker
                     value={config.cs2_path ?? ""}
@@ -892,15 +904,6 @@ export default function SettingsPage() {
                     exeName="cs2.exe"
                     detectApi="config/detect-cs2"
                     detectField="cs2_path"
-                    t={t}
-                  />
-                </FieldRow>
-                <FieldRow label={t("settings.labelHlaePath")} hint={t("settings.hintHlaePath")} search={search && !matches(t("settings.labelHlaePath") + " " + (config.hlae_path ?? ""))}>
-                  <PathPicker
-                    value={config.hlae_path ?? ""}
-                    onChange={(v) => set("hlae_path", v)}
-                    placeholder="HLAE.exe"
-                    exeName="HLAE.exe"
                     t={t}
                   />
                 </FieldRow>
@@ -1429,6 +1432,49 @@ export default function SettingsPage() {
                   />
                 )
               )}
+
+              <SectionCard
+                title={t("settings.sectionTacticalPov")}
+                hint={t("settings.sectionTacticalPovHint")}
+                search={search && !matches([
+                  t("settings.sectionTacticalPov"),
+                  t("settings.labelHlaePath"),
+                  t("settings.labelPovDefaultMode"),
+                  t("settings.labelPovDeathCard"),
+                  config.hlae_path ?? "",
+                  config.tactical_pov_default_mode ?? "obs",
+                ].join(" "))}
+              >
+                <FieldRow label={t("settings.labelHlaePath")} hint={t("settings.hintHlaePath")} search={search && !matches(t("settings.labelHlaePath") + " " + (config.hlae_path ?? ""))}>
+                  <PathPicker
+                    value={config.hlae_path ?? ""}
+                    onChange={(value) => set("hlae_path", value)}
+                    placeholder="HLAE.exe"
+                    exeName="HLAE.exe"
+                    t={t}
+                  />
+                </FieldRow>
+                <FieldRow label={t("settings.labelPovDefaultMode")} hint={t("settings.hintPovDefaultMode")} search={search && !matches(t("settings.labelPovDefaultMode") + " " + t("settings.hintPovDefaultMode"))}>
+                  <SelectInput
+                    value={config.tactical_pov_default_mode ?? "obs"}
+                    onChange={(value) => set("tactical_pov_default_mode", value)}
+                    options={[
+                      { value: "obs", label: t("settings.povModeObs") },
+                      { value: "advanced_obs", label: t("settings.povModeAdvancedObs") },
+                      { value: "hlae", label: t("settings.povModeHlae") },
+                    ]}
+                  />
+                </FieldRow>
+                <FieldRow label={t("settings.labelPovDeathCard")} hint={t("settings.hintPovDeathCard")} search={search && !matches(t("settings.labelPovDeathCard") + " " + t("settings.hintPovDeathCard"))}>
+                  <Toggle
+                    value={config.tactical_pov_death_card_enabled !== false}
+                    onChange={(value) => set("tactical_pov_death_card_enabled", value)}
+                    ariaLabel={t("settings.labelPovDeathCard")}
+                    onLabel={t("settings.enabled")}
+                    offLabel={t("settings.disabled")}
+                  />
+                </FieldRow>
+              </SectionCard>
             </div>
           )}
 

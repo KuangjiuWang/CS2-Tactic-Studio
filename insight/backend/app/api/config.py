@@ -48,6 +48,8 @@ class ConfigPayload(BaseModel):
     montage_export_dir: Optional[str] = None
     cs2_path: Optional[str] = None
     hlae_path: Optional[str] = None
+    tactical_pov_default_mode: Optional[str] = None
+    tactical_pov_death_card_enabled: Optional[bool] = None
     demo_directory: Optional[str] = None
     demo_cache_directory: Optional[str] = None
     demo_watch_paths: Optional[list[str]] = None
@@ -352,6 +354,10 @@ async def update_config(payload: ConfigPayload):
         cfg.cs2_path = payload.cs2_path
     if payload.hlae_path is not None:
         cfg.hlae_path = str(payload.hlae_path).strip()
+    if payload.tactical_pov_default_mode in {"obs", "advanced_obs", "hlae"}:
+        cfg.tactical_pov_default_mode = payload.tactical_pov_default_mode
+    if payload.tactical_pov_death_card_enabled is not None:
+        cfg.tactical_pov_death_card_enabled = bool(payload.tactical_pov_death_card_enabled)
     if payload.demo_directory is not None:
         cfg.demo_directory = str(payload.demo_directory or "").strip()
     if payload.demo_cache_directory is not None:

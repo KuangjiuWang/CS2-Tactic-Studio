@@ -396,6 +396,9 @@ class AppConfig(BaseModel):
     cs2_path: str = ""
     # Optional HLAE executable used by the Tactical Playbook's alternate POV renderer.
     hlae_path: str = ""
+    # Tactical POV behavior chosen in Settings → OBS/FFmpeg Configuration.
+    tactical_pov_default_mode: str = "obs"
+    tactical_pov_death_card_enabled: bool = True
     demo_directory: str = ""
     # Demo 工作副本缓存根目录；留空则使用 data/demo-cache。入库/上传后复制到此，解析播放录制走缓存。
     demo_cache_directory: str = ""

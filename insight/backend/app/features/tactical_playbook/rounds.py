@@ -50,12 +50,20 @@ def select_round(workspace: dict, round_number: int, side: str) -> tuple[dict, s
     return round_row, team_key, players
 
 
-def build_five_pov_jobs(demo_path: str, workspace: dict, round_number: int, side: str) -> list[dict]:
+def build_five_pov_jobs(
+    demo_path: str,
+    workspace: dict,
+    round_number: int,
+    side: str,
+    *,
+    death_card_enabled: bool = False,
+) -> list[dict]:
     """Build five jobs for the upstream real CS2/OBS recording queue.
 
-    A dead player's real in-eye recording ends at death + 2 seconds.  The
-    returned coverage is therefore per-player; it is never advertised as a
-    full-round video if the engine cannot provide one.
+    With the death card enabled, capture all five players through the same
+    authoritative round-end tick and mask the dead player's spectator footage
+    from the death tick onward during encoding. Otherwise, retain the legacy
+    per-player death + post-roll coverage.
     """
     path = Path(demo_path).resolve(strict=True)
     if not path.is_file() or path.suffix.lower() != ".dem":
@@ -108,9 +116,15 @@ def build_five_pov_jobs(demo_path: str, workspace: dict, round_number: int, side
                 freeze_end_tick=_tick(row.get("freeze_end_tick")),
                 round_end_tick=round_end_tick,
                 next_round_start_tick=next_round_start_tick or None,
-                target_death_tick=death_tick,
+                target_death_tick=None if death_card_enabled else death_tick,
             )],
-            options=RecordingOptions(round_freeze_preroll_sec=2.0, round_death_post_sec=2.0),
+            options=RecordingOptions(
+                round_freeze_preroll_sec=2.0,
+                round_death_post_sec=2.0,
+                round_compilation_post_round_sec=0.0,
+                final_round_extra_post_sec=0.0,
+                demo_end_guard_sec=0.0,
+            ),
         )
         plan = build_plan(request)
         if len(plan.segments) != 1:
@@ -124,7 +138,9 @@ def build_five_pov_jobs(demo_path: str, workspace: dict, round_number: int, side
             "side": side.upper(),
             "coverage_start_tick": segment.start_tick,
             "coverage_end_tick": segment.end_tick,
+            "round_end_tick": round_end_tick,
             "death_tick": death_tick,
+            "death_card_enabled": bool(death_card_enabled and death_tick is not None),
             "request": request.model_dump(mode="json"),
         })
     return jobs

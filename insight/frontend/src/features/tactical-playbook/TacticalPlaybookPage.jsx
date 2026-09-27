@@ -22,6 +22,7 @@ export default function TacticalPlaybookPage() {
   const [collapsed, setCollapsed] = useState(false);
   const [exportingId, setExportingId] = useState(null);
   const [exportResult, setExportResult] = useState(null);
+  const [deleteNotice, setDeleteNotice] = useState(null);
   const fileRef = useRef(null);
   const filterKeys = ["search", "map", "side", "pov", "category", "site", "utility", "result", "sort"];
   const filters = Object.fromEntries(filterKeys.map((key) => [key, params.get(key) || (key === "sort" ? "updated" : "")]));
@@ -73,9 +74,10 @@ export default function TacticalPlaybookPage() {
       const { data } = await API.get(`/tactical/tactics/${item.id}`);
       await API.post("/tactical/import", { format: "cs2-tactic-v1", tactic: { ...data, name: `${data.name} (${t("playbook.copy")})` } });
     });
+    if (key === "delete") setDeleteNotice(null);
     setDialog({ kind: "tactics", action: key, item });
   };
-  const submit = async ({ name, selected, parent, classification }) => {
+  const submit = async ({ name, selected, parent, classification, deletePovVideos }) => {
     setBusy(true);
     try {
       const { kind, action: key, item } = dialog;
@@ -84,6 +86,19 @@ export default function TacticalPlaybookPage() {
       else if (key === "classify") await API.patch(`/tactical/tactics/${item.id}/classification`, classification);
       else if (key === "move") await API.patch(`/tactical/folders/${item.id}/parent`, { parent_id: parent });
       else if (key === "addToFolder") await API.put(`/tactical/tactics/${item.id}/folders`, { folder_ids: selected });
+      else if (key === "delete" && kind === "tactics") {
+        const { data } = await API.delete(`/tactical/tactics/${item.id}`, { data: { delete_pov_videos: Boolean(deletePovVideos) } });
+        if (deletePovVideos) {
+          const statusKey = {
+            deleted: "playbook.deletePovVideosDeleted",
+            in_use: "playbook.deletePovVideosInUse",
+            missing: "playbook.deletePovVideosMissing",
+            failed: "playbook.deletePovVideosFailed",
+            unsafe_path: "playbook.deletePovVideosUnsafe",
+          }[data?.pov_media?.status] || "playbook.deletePovVideosMissing";
+          setDeleteNotice({ key: statusKey, values: { count: data?.pov_media?.files ?? 0 } });
+        }
+      }
       else if (key === "delete") await API.delete(`/tactical/${kind}/${item.id}`);
       await refresh();
       if (kind === "folders" && key === "delete") select(null);
@@ -107,6 +122,7 @@ export default function TacticalPlaybookPage() {
       <PlaybookFilters filters={filters} change={change} />
       {exportingId && <div className="playbook-export-status" role="status">{t("playbook.exporting")}</div>}
       {exportResult && <div className="playbook-export-status" role="status"><span>{t(exportResult.path ? exportResult.forSharing ? "playbook.shareReady" : "playbook.exportSaved" : "playbook.downloadStarted", { path: exportResult.path })}</span>{exportResult.path && <button type="button" onClick={() => void desktopBridge?.showItemInFolder?.(exportResult.path)}>{t("playbook.openFolder")}</button>}</div>}
+      {deleteNotice && <div className="playbook-export-status" role="status">{t(deleteNotice.key, deleteNotice.values)}</div>}
       {error && <div className="playbook-error" role="alert">{error}<button onClick={() => void run(refresh)}>{t("playbook.retry")}</button></div>}
       {folderId && !selectedFolder && !loading ? <div className="playbook-empty"><p>{t("playbook.folderMissing")}</p><button onClick={() => select(null)}>{t("playbook.all")}</button></div>
         : loading ? <div className="playbook-empty" role="status">{t("playbook.loading")}</div>

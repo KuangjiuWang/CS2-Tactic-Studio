@@ -7,11 +7,8 @@ from ..platform_utils import platform_slot_offset, compute_voice_listen_mask, co
 logger = logging.getLogger(__name__)
 
 
-# Keep the round-result beat visible in round compilations.  ``round_end_tick`` is
-# the instant CS2 decides the round (often the same tick as the last kill), not the
-# end of the post-round presentation.  This mirrors the 3 s tail used by the round
-# timeline path while still being capped before the next round's freeze phase.
-_ROUND_COMPILATION_POST_ROUND_END_SEC = 3.0
+# Keep the round-result beat visible by default. Tactical POV review can override
+# this duration to zero because its five synchronized views end at round_end_tick.
 
 
 def sec_to_ticks(sec: float, tick_rate: float) -> int:
@@ -80,7 +77,7 @@ def plan_round_pov(req: NormalizedRequest) -> tuple[list[RecordingSegment], list
         is_final_round = (round_info.round == req.demo.final_round)
         is_round_compilation = req.request_type == RequestType.round_compilation
         round_end_post_ticks = sec_to_ticks(
-            _ROUND_COMPILATION_POST_ROUND_END_SEC, tick_rate
+            opts.round_compilation_post_round_sec, tick_rate
         )
 
         # --- Compute end_tick ---

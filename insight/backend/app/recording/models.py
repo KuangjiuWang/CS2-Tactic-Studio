@@ -98,6 +98,9 @@ class RecordingOptions(BaseModel):
     death_compilation_merge_gap_sec: float = 2.0
     round_freeze_preroll_sec: float = 3.0
     round_death_post_sec: float = 2.0
+    # Round compilations normally keep a short post-round result beat. Tactical
+    # POV review can set this to zero so every player's clip ends on the same tick.
+    round_compilation_post_round_sec: float = 3.0
     enable_victim_pov: bool = False
     victim_pov_pre_sec: Optional[float] = None   # None = use highlight_pre_sec
     victim_pov_post_sec: float = 1.5

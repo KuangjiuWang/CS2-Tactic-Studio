@@ -71,7 +71,7 @@ def test_recording_batch_is_linked_to_saved_draft_before_it_runs(tmp_path, monke
         demo.write_bytes(b"demo")
         tactic = await _create_tactic(store, demo)
         monkeypatch.setattr(api, "TacticalStore", lambda: store)
-        monkeypatch.setattr(api, "_jobs", lambda _: [])
+        monkeypatch.setattr(api, "_jobs", lambda _, **_kwargs: [])
         monkeypatch.setattr(api, "_persist_batch", lambda _: None)
         monkeypatch.setattr(api, "_batches", {})
         monkeypatch.setattr(api, "_batch_tasks", set())

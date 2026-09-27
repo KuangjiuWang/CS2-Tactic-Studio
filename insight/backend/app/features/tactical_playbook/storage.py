@@ -325,14 +325,41 @@ class TacticalStore:
                 await db.execute("DELETE FROM tactical_folders WHERE id=?", (item_id,))
             await db.commit()
 
-    async def delete_tactic(self, tactic_id: str) -> None:
+    async def delete_tactic(self, tactic_id: str) -> dict:
         await self.initialize()
         async with aiosqlite.connect(self.path) as db:
             await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                "SELECT metadata_json FROM tactical_tactics WHERE id=?", (tactic_id,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                raise ValueError("tactic does not exist")
+            try:
+                metadata = json.loads(row[0] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            batch_id = metadata.get("pov_batch_id")
+            shared = False
+            if batch_id:
+                cursor = await db.execute(
+                    "SELECT metadata_json FROM tactical_tactics WHERE id<>?", (tactic_id,),
+                )
+                for (other_metadata_json,) in await cursor.fetchall():
+                    try:
+                        other_metadata = json.loads(other_metadata_json or "{}")
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    if other_metadata.get("pov_batch_id") == batch_id:
+                        shared = True
+                        break
+            await db.execute("DELETE FROM tactical_povs WHERE tactic_id=?", (tactic_id,))
             cursor = await db.execute("DELETE FROM tactical_tactics WHERE id=?", (tactic_id,))
             if cursor.rowcount != 1:
                 raise ValueError("tactic does not exist")
             await db.commit()
+        return {"pov_batch_id": batch_id, "pov_batch_shared": shared}
 
     async def import_tactic(self, data: dict) -> dict:
         # Validate the complete document before creating anything; steps and tactic commit together.
