@@ -52,6 +52,7 @@ export default {
   "nav.guide": "上手指南",
   "nav.demoLibrary": "Demo 库",
   "nav.analysis": "Demo 分析",
+  "nav.playerArchive": "选手档案",
   "nav.cosmeticsWorkshop": "饰品工坊",
   "nav.recordQueue": "录制队列",
   "nav.montage": "合辑工作台",

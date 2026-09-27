@@ -14,6 +14,7 @@ import match from "./locales/zh/match.js";
 import app from "./locales/zh/app.js";
 import cosmeticsWorkshop from "./locales/zh/cosmeticsWorkshop.js";
 import radar from "./locales/zh/radar.js";
+import playerArchive from "./locales/zh/playerArchive.js";
 
 export default mergeCatalogs("zh", {
   playbook,
@@ -31,4 +32,5 @@ export default mergeCatalogs("zh", {
   app,
   cosmeticsWorkshop,
   radar,
+  playerArchive,
 });

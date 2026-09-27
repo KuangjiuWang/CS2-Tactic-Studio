@@ -14,6 +14,7 @@ import match from "./locales/en/match.js";
 import app from "./locales/en/app.js";
 import cosmeticsWorkshop from "./locales/en/cosmeticsWorkshop.js";
 import radar from "./locales/en/radar.js";
+import playerArchive from "./locales/en/playerArchive.js";
 
 export default mergeCatalogs("en", {
   playbook,
@@ -31,4 +32,5 @@ export default mergeCatalogs("en", {
   app,
   cosmeticsWorkshop,
   radar,
+  playerArchive,
 });

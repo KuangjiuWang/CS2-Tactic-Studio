@@ -765,7 +765,14 @@ def _accumulate_capped_damage(
     hurt_df: pd.DataFrame,
     player_team: dict[str, str],
     windows: list[dict[str, Any]],
-) -> tuple[dict[str, int], dict[str, int]]:
+) -> tuple[
+    dict[str, int],
+    dict[str, int],
+    dict[tuple[str, int], int],
+    dict[tuple[str, int], int],
+    dict[tuple[str, str], int],
+    dict[tuple[str, int, str], int],
+]:
     """Sum enemy health damage with overkill capped to remaining HP.
 
     demoparser2 often reports weapon damage in ``dmg_health`` (e.g. 123 on a
@@ -773,8 +780,12 @@ def _accumulate_capped_damage(
     """
     total: dict[str, int] = defaultdict(int)
     utility: dict[str, int] = defaultdict(int)
+    by_round: dict[tuple[str, int], int] = defaultdict(int)
+    utility_by_round: dict[tuple[str, int], int] = defaultdict(int)
+    by_weapon: dict[tuple[str, str], int] = defaultdict(int)
+    by_round_weapon: dict[tuple[str, int, str], int] = defaultdict(int)
     if hurt_df is None or hurt_df.empty:
-        return total, utility
+        return total, utility, by_round, utility_by_round, by_weapon, by_round_weapon
 
     freeze_ticks = sorted(
         _int(window.get("freeze_end_tick"))
@@ -820,9 +831,17 @@ def _accumulate_capped_damage(
         if dealt <= 0:
             continue
         total[atk_key] += dealt
-        if _normalize_weapon(row.get("weapon")) in _UTILITY_WEAPONS:
+        weapon = _normalize_weapon(row.get("weapon")) or "unknown"
+        by_weapon[(atk_key, weapon)] += dealt
+        round_number = _round_number_for_tick(tick, windows)
+        if round_number > 0:
+            by_round[(atk_key, round_number)] += dealt
+            by_round_weapon[(atk_key, round_number, weapon)] += dealt
+        if weapon in _UTILITY_WEAPONS:
             utility[atk_key] += dealt
-    return total, utility
+            if round_number > 0:
+                utility_by_round[(atk_key, round_number)] += dealt
+    return total, utility, by_round, utility_by_round, by_weapon, by_round_weapon
 
 
 def _note_clutch_solos(
@@ -957,7 +976,14 @@ def _player_stats(
                     "kills": int(count),
                 })
 
-    damage_by_attacker, utility_by_attacker = _accumulate_capped_damage(
+    (
+        damage_by_attacker,
+        utility_by_attacker,
+        damage_by_round,
+        utility_damage_by_round,
+        damage_by_weapon,
+        damage_by_round_weapon,
+    ) = _accumulate_capped_damage(
         hurt_df, player_team, windows or [],
     )
     for atk_key, damage in damage_by_attacker.items():
@@ -984,6 +1010,52 @@ def _player_stats(
             sum(int(row.get("equipment_value") or 0) for row in economy_rows) / len(economy_rows)
             if economy_rows else 0.0
         )
+        best_economy_row_by_round: dict[int, dict[str, Any]] = {}
+        for economy_row in economy_rows:
+            round_number = _int(economy_row.get("round_number"))
+            if round_number <= 0:
+                continue
+            previous = best_economy_row_by_round.get(round_number)
+            rank = (
+                _int(economy_row.get("equipment_value")),
+                _int(economy_row.get("money_spent")),
+                -_int(economy_row.get("tick")),
+            )
+            previous_rank = (
+                _int(previous.get("equipment_value")),
+                _int(previous.get("money_spent")),
+                -_int(previous.get("tick")),
+            ) if previous else None
+            if previous is None or rank > previous_rank:
+                best_economy_row_by_round[round_number] = economy_row
+        economy_rounds = [
+            {
+                "round_number": round_number,
+                "type": str(row.get("type") or "unknown"),
+                "equipment_value": max(0, _int(row.get("equipment_value"))),
+                "money_spent": max(0, _int(row.get("money_spent"))),
+                "start_money": max(0, _int(row.get("start_money"))),
+            }
+            for round_number, row in sorted(best_economy_row_by_round.items())
+        ]
+        round_damage = [
+            {
+                "round_number": round_number,
+                "damage": int(damage_by_round.get((key, round_number), 0)),
+                "utility_damage": int(utility_damage_by_round.get((key, round_number), 0)),
+            }
+            for round_number in round_numbers
+        ]
+        weapon_damage = {
+            weapon: int(value)
+            for (player_key, weapon), value in damage_by_weapon.items()
+            if player_key == key and value > 0
+        }
+        weapon_damage_rounds = [
+            {"round_number": round_number, "weapon": weapon, "damage": int(value)}
+            for (player_key, round_number, weapon), value in sorted(damage_by_round_weapon.items())
+            if player_key == key and value > 0
+        ]
         roster_row = roster_by_name.get(key, {})
         stats_out.append({
             "name": name,
@@ -1001,6 +1073,7 @@ def _player_stats(
             "kast": round(len(kast_rounds & all_rounds) / total_rounds * 100, 1),
             "headshots": headshots,
             "hs_percent": round(headshots / max(1, kills) * 100, 1),
+            "damage": damage,
             "first_kills": int(counter["first_kills"]),
             "first_deaths": int(counter["first_deaths"]),
             "opening_duel_win_rate": round(counter["first_kills"] / max(1, opening_duels) * 100, 1),
@@ -1019,6 +1092,10 @@ def _player_stats(
             "utility_damage": int(counter["utility_damage"]),
             "utility_damage_per_round": round(counter["utility_damage"] / total_rounds, 1),
             "average_equipment_value": round(avg_equipment),
+            "economy_rounds": economy_rounds,
+            "round_damage": round_damage,
+            "weapon_damage": weapon_damage,
+            "weapon_damage_rounds": weapon_damage_rounds,
         })
     stats_out.sort(key=lambda row: (-int(row["kills"]), -float(row["adr"]), str(row["name"]).lower()))
     return stats_out, dict(special_events_by_round)
@@ -1107,6 +1184,7 @@ def build_match_workspace(
             )
             payload = {
                 "round_number": int(round_number),
+                "tick": _int(tick_raw),
                 "equipment_value": equipment,
                 "money_spent": spent,
                 "start_money": start_money,

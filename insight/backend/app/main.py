@@ -56,6 +56,10 @@ from .features.match_history.api import router as match_history_router
 from .features.demo_analysis.api import router as demo_analysis_router
 from .features.cs_data_radar.api import router as cs_data_radar_router
 from .features.tactical_playbook.api import router as tactical_playbook_router
+from .features.player_archive.api import (
+    initialize_player_archive_db,
+    router as player_archive_router,
+)
 
 
 # Compatibility exports for tests and older integrations that call helpers from
@@ -126,6 +130,7 @@ async def lifespan(_: FastAPI):
     )
 
     await demo_db.init_db()
+    await initialize_player_archive_db()
     await montage_db.init_tables()
     await lite_cut_db.init_tables()
     from .features.demo_analysis.replay_cache_storage import ensure_replay_cache_owner_index
@@ -194,6 +199,7 @@ app.include_router(match_history_router)
 app.include_router(demo_library_router)
 app.include_router(demo_analysis_router)
 app.include_router(tactical_playbook_router)
+app.include_router(player_archive_router)
 app.include_router(cs_data_radar_router)
 app.include_router(config_router)
 app.include_router(obs_router)

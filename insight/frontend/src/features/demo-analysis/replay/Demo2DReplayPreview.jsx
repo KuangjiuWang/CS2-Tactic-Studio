@@ -485,6 +485,7 @@ export default function Demo2DReplayPreview({
   layoutEditing = false,
   layoutResetSignal = 0,
   externalSeekTick = null,
+  externalSeekRequestId = 0,
   externalPlayheadTick = null,
   externalPlaying = null,
   externalSpeed = null,
@@ -1018,7 +1019,7 @@ export default function Demo2DReplayPreview({
     if (externalSeekTick == null || !frames.length) return;
     const index = frames.findIndex((frame) => Number(frame.tick) >= Number(externalSeekTick));
     seekToFrameIndex(index < 0 ? frames.length - 1 : index);
-  }, [externalSeekTick, frames]);
+  }, [externalSeekRequestId, externalSeekTick, frames]);
 
   useEffect(() => {
     if (externalPlayheadTick == null || !frames.length) return;

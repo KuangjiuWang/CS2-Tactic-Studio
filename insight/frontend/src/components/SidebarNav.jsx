@@ -10,6 +10,7 @@ import {
   PanelLeft,
   Settings,
   Sun,
+  Users,
 } from "lucide-react";
 import API from "../api/api";
 import { useT } from "../i18n/useT.js";
@@ -29,6 +30,7 @@ const NAV_ITEMS = [
   { to: "/", end: true, labelKey: "nav.guide", icon: BookOpen },
   { to: "/library", labelKey: "nav.demoLibrary", icon: Library },
   { to: "/analysis", labelKey: "nav.analysis", icon: BarChart3 },
+  { to: "/players", labelKey: "nav.playerArchive", icon: Users },
   { to: "/tactics", labelKey: "playbook.library", icon: BookOpen },
   { to: "/queue", labelKey: "nav.recordQueue", icon: Package, queue: true, guarded: true },
 ];

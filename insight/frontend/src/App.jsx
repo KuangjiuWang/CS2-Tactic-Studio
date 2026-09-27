@@ -50,6 +50,8 @@ const DemoLibraryPage = lazy(() => import("./features/demo-library/DemoLibraryPa
 const DemoAnalysisPage = lazy(() => import("./features/demo-analysis/DemoAnalysisPage"));
 const TacticalViewer = lazy(() => import("./features/tactical-playbook/TacticalViewer"));
 const TacticalPlaybookPage = lazy(() => import("./features/tactical-playbook/TacticalPlaybookPage"));
+const PlayerArchivePage = lazy(() => import("./features/player-archive/PlayerArchivePage.jsx"));
+const PlayerProfilePage = lazy(() => import("./features/player-archive/PlayerProfilePage.jsx"));
 const RecordingQueuePage = lazy(() => import("./pages/RecordingQueuePage"));
 const MontageWorkbenchPage = lazy(() => import("./pages/MontageWorkbenchPage"));
 const LiteCutEditorPage = lazy(() => import("./features/lite-cut/pages/LiteCutEditorPage"));
@@ -1476,6 +1478,8 @@ export default function App() {
                 <Route path="/library" element={<DemoLibraryPage />} />
                 <Route path="/analysis" element={<DemoAnalysisPage />} />
                 <Route path="/tactics" element={<TacticalPlaybookPage />} />
+                <Route path="/players" element={<PlayerArchivePage />} />
+                <Route path="/players/:playerKey" element={<PlayerProfilePage />} />
                 <Route path="/tactics/folder/:folderId" element={<TacticalPlaybookPage />} />
                 <Route path="/tactics/new" element={<TacticalViewer />} />
                 <Route path="/tactics/:tacticId" element={<TacticalViewer />} />
