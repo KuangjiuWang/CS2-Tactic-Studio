@@ -4,9 +4,12 @@ import {
   Activity, ArrowLeft, Download, Filter, Map as MapIcon, ShieldCheck, Swords, Target,
   Trophy, Users, Crosshair, Loader2, ChevronRight,
 } from "lucide-react";
-import API from "../../api/api";
+import API, { getDemoRadarMapUrl } from "../../api/api";
 import { useT } from "../../i18n/useT.js";
+import { worldToRadarPercent } from "../demo-analysis/replay/replayRadarTransform";
 import { aggregateMatches } from "./playerArchiveStats.js";
+import { useLocaleStore } from "../../i18n/localeStore.js";
+import { weaponDisplayName } from "../../i18n/weaponNames.js";
 import "./playerProfile.css";
 
 export { aggregateMatches };
@@ -26,10 +29,44 @@ function dateLabel(value) {
   return Number.isNaN(date.getTime()) ? String(value).slice(0, 10) : date.toLocaleDateString();
 }
 
+const PERFORMANCE_UTILITY_NAMES = {
+  hegrenade: { zh: "高爆手雷", en: "High Explosive Grenade" },
+  inferno: { zh: "燃烧伤害", en: "Fire Damage" },
+  molotov: { zh: "燃烧瓶", en: "Molotov" },
+  incgrenade: { zh: "燃烧弹", en: "Incendiary Grenade" },
+  incendiary: { zh: "燃烧弹", en: "Incendiary Grenade" },
+  smokegrenade: { zh: "烟雾弹", en: "Smoke Grenade" },
+  flashbang: { zh: "闪光弹", en: "Flashbang" },
+  decoy: { zh: "诱饵弹", en: "Decoy" },
+};
+
+function performanceUtilityName(value, locale) {
+  const raw = String(value || "").trim();
+  const aliases = {
+    "he 手雷": "hegrenade",
+    "he grenade": "hegrenade",
+    "手雷": "hegrenade",
+    "烟雾弹": "smokegrenade",
+    smoke: "smokegrenade",
+    "闪光弹": "flashbang",
+    "闪光震撼弹": "flashbang",
+    flash: "flashbang",
+    "燃烧瓶": "molotov",
+    "燃烧弹": "incgrenade",
+    "诱饵弹": "decoy",
+  };
+  const key = aliases[raw.toLocaleLowerCase()] || raw.toLocaleLowerCase();
+  return PERFORMANCE_UTILITY_NAMES[key]?.[locale] || weaponDisplayName(raw, locale) || raw;
+}
+
 function positionLabel(position) {
   return position && Number.isFinite(Number(position.x)) && Number.isFinite(Number(position.y))
     ? `${number(position.x, 0)}, ${number(position.y, 0)}`
     : "—";
+}
+
+function positionCellKey(ownArea, enemyArea) {
+  return `${String(ownArea || "未知区域").toLocaleLowerCase()}\u0000${String(enemyArea || "未知区域").toLocaleLowerCase()}`;
 }
 
 function mergeBreakdown(matches, key, side = "all") {
@@ -49,9 +86,30 @@ function mergeBreakdown(matches, key, side = "all") {
   return [...merged.entries()].map(([label, values]) => ({ label, ...values }));
 }
 
+function aggregateHitFireCounts(matches, side = "all") {
+  let hitEvents = 0;
+  let shotsFired = 0;
+  let coveredMatches = 0;
+  for (const match of matches) {
+    const metrics = match.metrics || {};
+    const split = side === "all" ? null : metrics.side_breakdown?.[side];
+    if (side !== "all" && !split) continue;
+    if (!metrics.gun_hit_events_available || !metrics.shot_data_available) continue;
+    coveredMatches += 1;
+    hitEvents += Number(split?.gun_hit_events ?? (side === "all" ? metrics.gun_hit_events : 0)) || 0;
+    shotsFired += Number(split?.shots_fired ?? (side === "all" ? metrics.shots_fired : 0)) || 0;
+  }
+  return { hitEvents, shotsFired, coveredMatches, available: coveredMatches > 0 };
+}
+
 function aggregateTacticalMatches(matches, side = "all") {
   const cells = new Map();
+  const killCells = new Map();
   const sites = new Map();
+  const tacticalMatches = [];
+  let mapTransform = null;
+  let duelKillTimeTotalMs = 0;
+  let duelKillTimeSamples = 0;
   const totals = {
     availableMatches: 0,
     duelWins: 0,
@@ -63,20 +121,43 @@ function aggregateTacticalMatches(matches, side = "all") {
     hold2k: 0,
     hold3k: 0,
     siteAreaKills: 0,
+    flashAssistedKills: 0,
   };
   for (const match of matches) {
     const tactical = match.tactical_metrics;
     if (!tactical?.available) continue;
+    tacticalMatches.push(match);
     totals.availableMatches += 1;
+    mapTransform ||= tactical.map_transform || null;
+    totals.flashAssistedKills += side === "all"
+      ? Number(tactical.flash_assisted_kills || 0)
+      : Number(tactical.flash_assisted_kills_by_side?.[side] || 0);
+    for (const [killSide, row] of Object.entries(tactical.duel_kill_time_by_side || {})) {
+      if (side !== "all" && killSide !== side) continue;
+      duelKillTimeTotalMs += Number(row?.total_ms || 0);
+      duelKillTimeSamples += Number(row?.samples || 0);
+    }
     for (const row of tactical.duel_cells || []) {
       if (side !== "all" && row.side !== side) continue;
       const ownArea = String(row.own_area || "未知区域");
       const enemyArea = String(row.enemy_area || "未知区域");
-      const key = `${ownArea}\u0000${enemyArea}`;
-      const target = cells.get(key) || { ownArea, enemyArea, wins: 0, losses: 0 };
+      const key = positionCellKey(ownArea, enemyArea);
+      const target = cells.get(key) || { ownArea, enemyArea, wins: 0, losses: 0, sample: null };
       target.wins += Number(row.wins || 0);
       target.losses += Number(row.losses || 0);
+      target.sample ||= row.sample || null;
       cells.set(key, target);
+    }
+    for (const row of tactical.position_kill_cells || []) {
+      if (side !== "all" && row.side !== side) continue;
+      const ownArea = String(row.own_area || "未知区域");
+      const enemyArea = String(row.enemy_area || "未知区域");
+      const key = positionCellKey(ownArea, enemyArea);
+      const target = killCells.get(key) || { ownArea, enemyArea, kills: 0, samples: 0, sample: null };
+      target.kills += Number(row.kills || 0);
+      target.samples += Number(row.rounds || 0);
+      target.sample ||= row.sample || null;
+      killCells.set(key, target);
     }
     const includeBreak = side === "all" || side === "T";
     const includeHold = side === "all" || side === "CT";
@@ -90,7 +171,10 @@ function aggregateTacticalMatches(matches, side = "all") {
       totals.hold2k += Number(tactical.site_hold_2k || 0);
       totals.hold3k += Number(tactical.site_hold_3k || 0);
     }
-    totals.siteAreaKills += Number(tactical.site_area_kills || 0);
+    const siteKills = side === "T"
+      ? tactical.site_break_kills
+      : side === "CT" ? tactical.site_hold_kills : tactical.site_area_kills;
+    totals.siteAreaKills += Number(siteKills || 0);
     for (const row of tactical.site_breakdown || []) {
       const site = String(row.site || "?");
       const target = sites.get(site) || {
@@ -111,14 +195,35 @@ function aggregateTacticalMatches(matches, side = "all") {
     }
   }
 
-  const cellRows = [...cells.values()];
+  const duelCellRows = [...cells.entries()].map(([key, row]) => ({ key, ...row }));
+  const rounds = aggregateMatches(tacticalMatches, side).rounds;
+  const positionKeys = new Set([...cells.keys(), ...killCells.keys()]);
+  const positionCells = [...positionKeys].map((key) => {
+    const duel = cells.get(key);
+    const kill = killCells.get(key);
+    const wins = Number(duel?.wins || 0);
+    const losses = Number(duel?.losses || 0);
+    const kills = Number(kill?.kills || 0);
+    return {
+      key,
+      ownArea: duel?.ownArea || kill?.ownArea || "未知区域",
+      enemyArea: duel?.enemyArea || kill?.enemyArea || "未知区域",
+      wins,
+      losses,
+      duelAttempts: wins + losses,
+      kills,
+      kpr: rounds ? kills / rounds : null,
+      duelSample: duel?.sample || null,
+      killSample: kill?.sample || null,
+    };
+  });
   const areaTotals = (field) => {
     const totalsByArea = new Map();
-    cellRows.forEach((row) => {
+    positionCells.forEach((row) => {
       const area = row[field];
-      totalsByArea.set(area, (totalsByArea.get(area) || 0) + row.wins + row.losses);
+      totalsByArea.set(area, (totalsByArea.get(area) || 0) + row.duelAttempts + row.kills);
     });
-    return [...totalsByArea.entries()].sort((left, right) => right[1] - left[1]).slice(0, 8).map(([area]) => area);
+    return [...totalsByArea.entries()].sort((left, right) => right[1] - left[1]).map(([area]) => area);
   };
   return {
     ...totals,
@@ -126,15 +231,118 @@ function aggregateTacticalMatches(matches, side = "all") {
     duelWinRate: totals.duelWins + totals.duelLosses
       ? totals.duelWins / (totals.duelWins + totals.duelLosses) * 100
       : null,
+    rounds,
+    duelKillTimeMs: duelKillTimeSamples ? duelKillTimeTotalMs / duelKillTimeSamples : null,
+    duelKillTimeSamples,
+    mapTransform,
     ownAreas: areaTotals("ownArea"),
     enemyAreas: areaTotals("enemyArea"),
-    cells: cellRows,
+    cells: duelCellRows,
+    positionCells,
     sites: [...sites.values()].sort((left, right) => left.site.localeCompare(right.site)),
   };
 }
 
 function StatCard({ icon: Icon, label, value, detail, tone = "" }) {
   return <article className={`player-profile__stat ${tone}`}><div><span>{label}</span>{Icon && <Icon size={15} />}</div><strong>{value}</strong>{detail && <small>{detail}</small>}</article>;
+}
+
+function PositionMatrix({
+  title,
+  note,
+  metric,
+  ownAreas,
+  enemyAreas,
+  cellMap,
+  rounds,
+  activePosition,
+  onHover,
+  onSelect,
+  t,
+}) {
+  const isKpr = metric === "kpr";
+  return (
+    <section className="player-profile__panel player-profile__position-matrix-panel">
+      <header><strong>{title}</strong><small>{note}</small></header>
+      {!ownAreas.length || !enemyAreas.length ? <div className="player-profile__empty">{t("playerArchive.noPositionSamples")}</div> : (
+        <div className="player-profile__table-scroll player-profile__tactical-matrix-scroll">
+          <table className="player-profile__tactical-matrix player-profile__position-matrix">
+            <thead><tr><th>{t("playerArchive.enemyPosition")}↓ / {t("playerArchive.ownPosition")}→</th>{ownAreas.map((area) => <th key={area}>{area}</th>)}</tr></thead>
+            <tbody>{enemyAreas.map((enemyArea) => <tr key={enemyArea}><th>{enemyArea}</th>{ownAreas.map((ownArea) => {
+              const key = positionCellKey(ownArea, enemyArea);
+              const cell = cellMap.get(key);
+              const attempts = Number(cell?.duelAttempts || 0);
+              const observed = attempts > 0 || Number(cell?.kills || 0) > 0;
+              const rate = attempts ? Number(cell.wins || 0) / attempts * 100 : null;
+              const value = isKpr
+                ? (cell?.kpr == null ? "—" : number(cell.kpr, 1))
+                : (rate == null ? "—" : `${number(rate, 1)}%`);
+              const detail = isKpr
+                ? `${number(cell?.kills || 0)} / ${number(rounds)}`
+                : attempts ? `${number(cell.wins)} / ${number(attempts)}` : "—";
+              const ariaLabel = `${ownArea} ${t("playerArchive.ownPosition")} · ${enemyArea} ${t("playerArchive.enemyPosition")} · ${title}: ${value}`;
+              return <td key={ownArea} className={observed ? "has-sample" : ""} style={rate == null ? undefined : { "--duel-rate": `${Math.round(rate)}%` }}>
+                {observed ? <button
+                  type="button"
+                  className={activePosition?.key === key && activePosition?.metric === metric ? "is-active" : ""}
+                  aria-label={ariaLabel}
+                  aria-pressed={activePosition?.key === key && activePosition?.metric === metric}
+                  title={isKpr ? `${number(cell?.kills || 0)} / ${number(rounds)} ${t("playerArchive.roundsShort")}` : `${number(cell.wins)} W / ${number(cell.losses)} L`}
+                  onMouseEnter={() => onHover({ key, metric })}
+                  onMouseLeave={() => onHover(null)}
+                  onFocus={() => onHover({ key, metric })}
+                  onBlur={() => onHover(null)}
+                  onClick={() => onSelect({ key, metric })}
+                ><strong>{value}</strong><small>{detail}</small></button> : "—"}
+              </td>;
+            })}</tr>)}</tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PositionRadarPreview({ mapName, transform, sample, ownArea, enemyArea, t }) {
+  const mapKey = String(mapName || "").toLowerCase();
+  const lowerLevelMax = Number(transform?.lower_level_max_units);
+  const hasFloors = ["de_nuke", "de_vertigo"].includes(mapKey) && Number.isFinite(lowerLevelMax);
+  const floorFor = (position) => {
+    if (!hasFloors || !Number.isFinite(Number(position?.z))) return null;
+    return Number(position.z) <= lowerLevelMax ? "lower" : "upper";
+  };
+  const suggestedLayer = floorFor(sample?.own_position) || floorFor(sample?.enemy_position) || "upper";
+  const [layer, setLayer] = useState(suggestedLayer);
+  useEffect(() => setLayer(suggestedLayer), [mapKey, suggestedLayer]);
+
+  const ownPoint = worldToRadarPercent(sample?.own_position, transform);
+  const enemyPoint = worldToRadarPercent(sample?.enemy_position, transform);
+  const hasPosition = Boolean(ownPoint || enemyPoint);
+
+  return <section className="player-profile__panel player-profile__position-radar-panel">
+    <header>
+      <div><strong>{t("playerArchive.positionMapTitle")}</strong><small>{mapName || t("playerArchive.tacticalSelectMap")}</small></div>
+      {hasFloors && <label className="player-profile__floor-select"><span>{t("playerArchive.mapFloor")}</span><select value={layer} onChange={(event) => setLayer(event.target.value)}><option value="upper">{t("playerArchive.upperFloor")}</option><option value="lower">{t("playerArchive.lowerFloor")}</option></select></label>}
+    </header>
+    {!mapName ? <div className="player-profile__empty">{t("playerArchive.tacticalSelectMap")}</div> : (
+      <>
+        <div className="player-profile__position-radar-scene">
+          <img src={getDemoRadarMapUrl(mapName, hasFloors ? layer : "")} alt={`${mapName} ${t("playerArchive.positionMapTitle")}`} draggable={false} />
+          <svg viewBox="0 0 100 100" role="img" aria-label={`${ownArea || "—"} · ${enemyArea || "—"}`}>
+            {ownPoint && enemyPoint && <line x1={ownPoint.x} y1={ownPoint.y} x2={enemyPoint.x} y2={enemyPoint.y} />}
+            {ownPoint && <g className="is-own-position"><circle cx={ownPoint.x} cy={ownPoint.y} r="2.5" /><text x={ownPoint.x} y={ownPoint.y - 3.2}>{t("playerArchive.ownPositionShort")}</text></g>}
+            {enemyPoint && <g className="is-enemy-position"><circle cx={enemyPoint.x} cy={enemyPoint.y} r="2.5" /><text x={enemyPoint.x} y={enemyPoint.y - 3.2}>{t("playerArchive.enemyPositionShort")}</text></g>}
+          </svg>
+          {!hasPosition && <div className="player-profile__position-no-coordinates">{t("playerArchive.positionCoordinatesUnavailable")}</div>}
+        </div>
+        <div className="player-profile__position-legend">
+          <span><i className="is-own-position" />{t("playerArchive.ownPositionShort")} · {ownArea || "—"}{floorFor(sample?.own_position) ? ` · ${t(floorFor(sample.own_position) === "lower" ? "playerArchive.lowerFloor" : "playerArchive.upperFloor")}` : ""}</span>
+          <span><i className="is-enemy-position" />{t("playerArchive.enemyPositionShort")} · {enemyArea || "—"}{floorFor(sample?.enemy_position) ? ` · ${t(floorFor(sample.enemy_position) === "lower" ? "playerArchive.lowerFloor" : "playerArchive.upperFloor")}` : ""}</span>
+        </div>
+        <p className="player-profile__position-map-note">{t("playerArchive.positionMapNote")}</p>
+      </>
+    )}
+  </section>;
 }
 
 function TrendChart({ rows, field, title, color, decimals = 2 }) {
@@ -174,15 +382,18 @@ function RateText({ value, digits = 1 }) {
 
 export default function PlayerProfilePage() {
   const t = useT();
+  const locale = useLocaleStore((state) => state.effectiveLocale);
   const { playerKey = "" } = useParams();
   const [searchParams] = useSearchParams();
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [savingGroups, setSavingGroups] = useState(false);
   const [mapName, setMapName] = useState(searchParams.get("map") || "");
+  const [positionMapName, setPositionMapName] = useState(searchParams.get("map") || "");
   const [side, setSide] = useState("all");
   const [matchLimit, setMatchLimit] = useState("all");
   const [activeTab, setActiveTab] = useState("overview");
+  const [activePerformanceTab, setActivePerformanceTab] = useState("aim");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [analysisDemoId, setAnalysisDemoId] = useState("");
@@ -193,6 +404,8 @@ export default function PlayerProfilePage() {
   const [replayTarget, setReplayTarget] = useState(null);
   const [replaySeekRequestId, setReplaySeekRequestId] = useState(0);
   const [evidenceFilter, setEvidenceFilter] = useState("all");
+  const [hoveredPosition, setHoveredPosition] = useState(null);
+  const [selectedPosition, setSelectedPosition] = useState(null);
 
   useEffect(() => {
     let active = true;
@@ -216,7 +429,27 @@ export default function PlayerProfilePage() {
     .filter((match) => scopedIds.has(String(match.demo_id)) && match.available && match.metrics)
     .sort((left, right) => String(left.match_date || "").localeCompare(String(right.match_date || "")) || Number(left.demo_id) - Number(right.demo_id)),
   [profile?.analysis_matches, scopedIds]);
+  const positionScopedMatches = useMemo(() => {
+    const filtered = allMatches.filter((match) => !positionMapName || match.map_name === positionMapName);
+    return matchLimit === "all" ? filtered : filtered.slice(0, Number(matchLimit));
+  }, [allMatches, positionMapName, matchLimit]);
+  const positionScopedIds = useMemo(
+    () => new Set(positionScopedMatches.map((match) => String(match.demo_id))),
+    [positionScopedMatches],
+  );
+  const positionAnalysisMatches = useMemo(() => [...(profile?.analysis_matches || [])]
+    .filter((match) => positionScopedIds.has(String(match.demo_id)) && match.available && match.metrics)
+    .sort((left, right) => String(left.match_date || "").localeCompare(String(right.match_date || "")) || Number(left.demo_id) - Number(right.demo_id)),
+  [profile?.analysis_matches, positionScopedIds]);
+  const positionReadyMatches = useMemo(
+    () => positionAnalysisMatches.filter((match) => match.tactical_metrics?.available),
+    [positionAnalysisMatches],
+  );
   const metrics = useMemo(() => aggregateMatches(analysisMatches, side), [analysisMatches, side]);
+  const positionStats = useMemo(() => aggregateMatches(positionReadyMatches, side), [positionReadyMatches, side]);
+  const attackStats = useMemo(() => aggregateMatches(analysisMatches, "T"), [analysisMatches]);
+  const defenseStats = useMemo(() => aggregateMatches(analysisMatches, "CT"), [analysisMatches]);
+  const hitFireStats = useMemo(() => aggregateHitFireCounts(analysisMatches, side), [analysisMatches, side]);
   const trendMatches = useMemo(() => analysisMatches.map((match) => {
     const filtered = aggregateMatches([match], side);
     return { ...match, metrics: { ...match.metrics, rating_approx: filtered.ratingApprox, adr: filtered.adr } };
@@ -238,6 +471,15 @@ export default function PlayerProfilePage() {
   useEffect(() => {
     setReplayTarget(null);
   }, [playerKey, selectedMatch?.demo_id]);
+
+  useEffect(() => {
+    setPositionMapName(searchParams.get("map") || "");
+  }, [playerKey, searchParams]);
+
+  useEffect(() => {
+    setHoveredPosition(null);
+    setSelectedPosition(null);
+  }, [playerKey, mapName, positionMapName, side, matchLimit]);
 
   useEffect(() => {
     let active = true;
@@ -349,20 +591,48 @@ export default function PlayerProfilePage() {
   const economyRows = useMemo(() => mergeBreakdown(analysisMatches, "economy_breakdown", side).sort((left, right) => right.rounds - left.rounds), [analysisMatches, side]);
   const utilityRows = useMemo(() => mergeBreakdown(analysisMatches, "utility_breakdown", side).sort((left, right) => right.throws - left.throws), [analysisMatches, side]);
   const clutchRows = useMemo(() => mergeBreakdown(analysisMatches, "clutch_breakdown", side).sort((left, right) => Number(left.label.slice(2)) - Number(right.label.slice(2))), [analysisMatches, side]);
+  const utilityDamageRows = useMemo(() => weaponRows.filter((row) => ["hegrenade", "inferno", "molotov", "incgrenade", "incendiary"].includes(String(row.label).toLowerCase())).sort((left, right) => right.damage - left.damage), [weaponRows]);
   const tactical = useMemo(() => (
     mapName ? aggregateTacticalMatches(analysisMatches, side) : aggregateTacticalMatches([], side)
   ), [analysisMatches, mapName, side]);
-  const tacticalCellMap = useMemo(() => new Map(
-    tactical.cells.map((row) => [`${row.ownArea}\u0000${row.enemyArea}`, row]),
-  ), [tactical.cells]);
+  const performanceTactical = useMemo(() => aggregateTacticalMatches(analysisMatches, side), [analysisMatches, side]);
+  const attackTactical = useMemo(() => aggregateTacticalMatches(analysisMatches, "T"), [analysisMatches]);
+  const defenseTactical = useMemo(() => aggregateTacticalMatches(analysisMatches, "CT"), [analysisMatches]);
+  const positionTactical = useMemo(() => (
+    positionMapName ? aggregateTacticalMatches(positionReadyMatches, side) : aggregateTacticalMatches([], side)
+  ), [positionReadyMatches, positionMapName, side]);
+  const tacticalPositionCellMap = useMemo(() => new Map(
+    positionTactical.positionCells.map((row) => [row.key, row]),
+  ), [positionTactical.positionCells]);
+  const defaultPositionCell = [...positionTactical.positionCells].sort((left, right) =>
+    right.duelAttempts + right.kills - left.duelAttempts - left.kills,
+  )[0];
+  const activePosition = (
+    (hoveredPosition && tacticalPositionCellMap.has(hoveredPosition.key) && hoveredPosition)
+    || (selectedPosition && tacticalPositionCellMap.has(selectedPosition.key) && selectedPosition)
+    || (defaultPositionCell ? { key: defaultPositionCell.key, metric: defaultPositionCell.duelAttempts ? "duel" : "kpr" } : null)
+  );
+  const activePositionCell = activePosition ? tacticalPositionCellMap.get(activePosition.key) : null;
+  const activePositionSample = activePosition?.metric === "kpr"
+    ? activePositionCell?.killSample || activePositionCell?.duelSample
+    : activePositionCell?.duelSample || activePositionCell?.killSample;
 
   const tabs = [
     ["overview", t("playerArchive.overview"), Activity],
     ["maps", t("playerArchive.mapSideAnalysis"), MapIcon],
     ["weapons", t("playerArchive.weaponsEconomy"), Swords],
     ["tactics", t("playerArchive.tacticalAnalysis"), Crosshair],
+    ["positions", t("playerArchive.positionAnalysis"), Crosshair],
+    ["performance", t("playerArchive.performanceData"), Activity],
     ["matches", t("playerArchive.matches"), Trophy],
     ["spatial", t("playerArchive.spatialAnalysis"), Crosshair],
+  ];
+  const performanceTabs = [
+    ["aim", t("playerArchive.performanceAim")],
+    ["attack", t("playerArchive.performanceAttack")],
+    ["defense", t("playerArchive.performanceDefense")],
+    ["utility", t("playerArchive.performanceUtility")],
+    ["clutch", t("playerArchive.performanceClutch")],
   ];
 
   if (loading) return <div className="player-profile__loading" role="status"><Loader2 className="animate-spin" size={24} />{t("playerArchive.loading")}</div>;
@@ -483,23 +753,7 @@ export default function PlayerProfilePage() {
         </div>}
 
         {activeTab === "tactics" && <div className="player-profile__analysis-grid">
-          <section className="player-profile__panel player-profile__panel--wide"><header><strong>{t("playerArchive.duelMatrix")}</strong><small>{mapName ? t("playerArchive.tacticalMapScope", { map: mapName }) : t("playerArchive.tacticalSelectMap")}</small></header>
-            <p className="player-profile__method-note">{t("playerArchive.duelMatrixNote", { matches: number(tactical.availableMatches) })}</p>
-            {!mapName ? <div className="player-profile__empty">{t("playerArchive.tacticalSelectMap")}</div>
-              : !tactical.availableMatches ? <div className="player-profile__empty">{t("playerArchive.tacticalNeedsReanalysis")}</div>
-              : tactical.duelAttempts ? <div className="player-profile__table-scroll player-profile__tactical-matrix-scroll"><table className="player-profile__tactical-matrix"><thead><tr><th>{t("playerArchive.enemyPosition")}↓ / {t("playerArchive.ownPosition")}→</th>{tactical.ownAreas.map((area) => <th key={area}>{area}</th>)}</tr></thead><tbody>{tactical.enemyAreas.map((enemyArea) => <tr key={enemyArea}><th>{enemyArea}</th>{tactical.ownAreas.map((ownArea) => {
-                const row = tacticalCellMap.get(`${ownArea}\u0000${enemyArea}`);
-                const attempts = Number(row?.wins || 0) + Number(row?.losses || 0);
-                const rate = attempts ? Number(row.wins) / attempts * 100 : null;
-                return <td key={ownArea} className={attempts ? "has-sample" : ""} style={rate == null ? undefined : { "--duel-rate": `${Math.round(rate)}%` }} title={attempts ? `${number(row.wins)} W / ${number(row.losses)} L` : ""}>
-                  {attempts ? <><strong>{number(rate)}%</strong><small>{number(row.wins)} / {number(row.losses)}</small></> : "—"}
-                </td>;
-              })}</tr>)}</tbody></table></div>
-              : <div className="player-profile__empty">{t("playerArchive.noDuelSamples")}</div>}
-          </section>
-
           <div className="player-profile__stat-grid player-profile__tactical-stats">
-            <StatCard icon={Swords} label={t("playerArchive.duelWinRate")} value={<RateText value={tactical.duelWinRate} />} detail={t("playerArchive.duelRecord", { wins: number(tactical.duelWins), losses: number(tactical.duelLosses), attempts: number(tactical.duelAttempts) })} tone="is-accent" />
             <StatCard icon={Target} label={t("playerArchive.breakSiteFirstKills")} value={number(tactical.breakFirstKills)} detail={t("playerArchive.breakSiteMultiKills", { two: number(tactical.break2k), three: number(tactical.break3k) })} />
             <StatCard icon={ShieldCheck} label={t("playerArchive.holdSiteFirstKills")} value={number(tactical.holdFirstKills)} detail={t("playerArchive.holdSiteMultiKills", { two: number(tactical.hold2k), three: number(tactical.hold3k) })} />
             <StatCard icon={MapIcon} label={t("playerArchive.recognizedSiteKills")} value={number(tactical.siteAreaKills)} detail={t("playerArchive.siteAreaKillNote")} />
@@ -508,6 +762,136 @@ export default function PlayerProfilePage() {
           <section className="player-profile__panel player-profile__panel--wide"><header><strong>{t("playerArchive.siteEntryBreakdown")}</strong><small>{t("playerArchive.siteEntryScope")}</small></header>
             <div className="player-profile__table-scroll"><table><thead><tr><th>{t("playerArchive.site")}</th><th>{t("playerArchive.breakSiteFirstKills")}</th><th>{t("playerArchive.siteMultiKillHeader")}</th><th>{t("playerArchive.holdSiteFirstKills")}</th><th>{t("playerArchive.siteMultiKillHeader")}</th></tr></thead><tbody>{tactical.sites.map((row) => <tr key={row.site}><td>{row.site}</td><td>{number(row.breakFirstKills)}</td><td>{number(row.break2k)} / {number(row.break3k)}</td><td>{number(row.holdFirstKills)}</td><td>{number(row.hold2k)} / {number(row.hold3k)}</td></tr>)}{!tactical.sites.length && <tr><td colSpan="5">{t(mapName ? "playerArchive.noSiteSamples" : "playerArchive.tacticalSelectMap")}</td></tr>}</tbody></table></div>
           </section>
+        </div>}
+
+        {activeTab === "performance" && <section className="player-profile__performance">
+          <header className="player-profile__performance-header">
+            <div><strong>{t("playerArchive.performanceData")}</strong><p>{t("playerArchive.performanceDataHint")}</p></div>
+            <small>{t("playerArchive.analysisCoverage", { analyzed: metrics.matches, total: scopedMatches.length, rounds: number(metrics.rounds) })}</small>
+          </header>
+          <nav className="player-profile__performance-tabs" role="tablist" aria-label={t("playerArchive.performanceData")}>
+            {performanceTabs.map(([id, label]) => <button type="button" key={id} role="tab" aria-selected={activePerformanceTab === id} className={activePerformanceTab === id ? "is-active" : ""} onClick={() => setActivePerformanceTab(id)}>{label}</button>)}
+          </nav>
+
+          {activePerformanceTab === "aim" && <>
+            <div className="player-profile__stat-grid player-profile__performance-grid">
+              <StatCard icon={Crosshair} label={t("playerArchive.performanceGunHitEvents")} value={hitFireStats.available ? number(hitFireStats.hitEvents) : "—"} detail={t("playerArchive.performanceHitEventNote", { shots: number(hitFireStats.shotsFired), matches: number(hitFireStats.coveredMatches) })} />
+              <StatCard icon={Target} label={t("playerArchive.hsPercent")} value={<RateText value={metrics.hsPercent} />} detail={`${number(metrics.headshots)} / ${number(metrics.kills)} ${t("playerArchive.killsShort")}`} />
+              <StatCard icon={Swords} label={t("playerArchive.openingRate")} value={<RateText value={metrics.openingRate} />} detail={`${number(metrics.firstKills)} / ${number(metrics.openingDuels)} ${t("playerArchive.duels")}`} />
+              <StatCard icon={Activity} label={t("playerArchive.performanceDuelKillTime")} value={performanceTactical.duelKillTimeMs == null ? "—" : `${number(performanceTactical.duelKillTimeMs, 0)} ms`} detail={t("playerArchive.performanceDuelKillTimeNote", { count: number(performanceTactical.duelKillTimeSamples) })} />
+              <StatCard label={t("playerArchive.kd")} value={number(metrics.kd, 2)} detail={`${number(metrics.kills)} / ${number(metrics.deaths)} ${t("playerArchive.killsDeaths")}`} />
+              <StatCard label={t("playerArchive.kpr")} value={number(metrics.kpr, 2)} detail={t("playerArchive.perRound", { rounds: number(metrics.rounds) })} />
+              <StatCard label={t("playerArchive.awpKills")} value={number(metrics.awpKills)} detail={t("playerArchive.killsShort")} />
+              <StatCard label={t("playerArchive.adr")} value={number(metrics.adr, 1)} detail={t("playerArchive.perRound", { rounds: number(metrics.rounds) })} />
+            </div>
+          </>}
+
+          {activePerformanceTab === "attack" && <>
+            <div className="player-profile__stat-grid player-profile__performance-grid">
+              <StatCard icon={Activity} label={t("playerArchive.performanceSideKillTime", { side: "T" })} value={attackTactical.duelKillTimeMs == null ? "—" : `${number(attackTactical.duelKillTimeMs, 0)} ms`} detail={t("playerArchive.performanceDuelKillTimeNote", { count: number(attackTactical.duelKillTimeSamples) })} />
+              <StatCard icon={Target} label={t("playerArchive.performanceOpeningRateT")} value={<RateText value={attackStats.openingRate} />} detail={`${number(attackStats.firstKills)} / ${number(attackStats.openingDuels)} ${t("playerArchive.duels")}`} />
+              <StatCard label={t("playerArchive.kpr")} value={number(attackStats.kpr, 2)} detail={t("playerArchive.perRound", { rounds: number(attackStats.rounds) })} />
+              <StatCard label={t("playerArchive.adr")} value={number(attackStats.adr, 1)} detail={t("playerArchive.perRound", { rounds: number(attackStats.rounds) })} />
+              <StatCard label={t("playerArchive.tradeKills")} value={number(attackStats.tradeKills)} detail={t("playerArchive.tradeDeaths", { count: number(attackStats.tradeDeaths) })} />
+              <StatCard label={t("playerArchive.performanceTradeKillsPer100")} value={attackStats.rounds ? number(attackStats.tradeKills / attackStats.rounds * 100, 1) : "—"} detail={t("playerArchive.per100Rounds")} />
+              <StatCard icon={Target} label={t("playerArchive.breakSiteFirstKills")} value={attackTactical.availableMatches ? number(attackTactical.breakFirstKills) : "—"} detail={attackTactical.availableMatches ? t("playerArchive.breakSiteMultiKills", { two: number(attackTactical.break2k), three: number(attackTactical.break3k) }) : "—"} />
+              <StatCard label={t("playerArchive.recognizedSiteKills")} value={attackTactical.availableMatches ? number(attackTactical.siteAreaKills) : "—"} detail={attackTactical.availableMatches ? t("playerArchive.siteAreaKillNote") : "—"} />
+            </div>
+          </>}
+
+          {activePerformanceTab === "defense" && <>
+            <div className="player-profile__stat-grid player-profile__performance-grid">
+              <StatCard icon={Activity} label={t("playerArchive.performanceSideKillTime", { side: "CT" })} value={defenseTactical.duelKillTimeMs == null ? "—" : `${number(defenseTactical.duelKillTimeMs, 0)} ms`} detail={t("playerArchive.performanceDuelKillTimeNote", { count: number(defenseTactical.duelKillTimeSamples) })} />
+              <StatCard icon={Target} label={t("playerArchive.performanceOpeningRateCT")} value={<RateText value={defenseStats.openingRate} />} detail={`${number(defenseStats.firstKills)} / ${number(defenseStats.openingDuels)} ${t("playerArchive.duels")}`} />
+              <StatCard label={t("playerArchive.survivalRate")} value={<RateText value={defenseStats.survival} />} detail={`${number(defenseStats.survivedRounds)} / ${number(defenseStats.rounds)} ${t("playerArchive.roundsShort")}`} />
+              <StatCard label={t("playerArchive.kpr")} value={number(defenseStats.kpr, 2)} detail={t("playerArchive.perRound", { rounds: number(defenseStats.rounds) })} />
+              <StatCard label={t("playerArchive.adr")} value={number(defenseStats.adr, 1)} detail={t("playerArchive.perRound", { rounds: number(defenseStats.rounds) })} />
+              <StatCard icon={ShieldCheck} label={t("playerArchive.holdSiteFirstKills")} value={defenseTactical.availableMatches ? number(defenseTactical.holdFirstKills) : "—"} detail={defenseTactical.availableMatches ? t("playerArchive.holdSiteMultiKills", { two: number(defenseTactical.hold2k), three: number(defenseTactical.hold3k) }) : "—"} />
+              <StatCard label={t("playerArchive.recognizedSiteKills")} value={defenseTactical.availableMatches ? number(defenseTactical.siteAreaKills) : "—"} detail={defenseTactical.availableMatches ? t("playerArchive.siteAreaKillNote") : "—"} />
+              <StatCard label={t("playerArchive.roundWinRate")} value={<RateText value={defenseStats.roundWinRate} />} detail={`${number(defenseStats.wins)} / ${number(defenseStats.rounds)} ${t("playerArchive.roundsShort")}`} />
+            </div>
+          </>}
+
+          {activePerformanceTab === "utility" && <>
+            <div className="player-profile__stat-grid player-profile__performance-grid">
+              <StatCard icon={Target} label={t("playerArchive.utilityDamagePerRound")} value={number(metrics.utilityDamagePerRound, 1)} detail={t("playerArchive.utilityDamageTotal", { damage: number(metrics.utilityDamage) })} />
+              <StatCard label={t("playerArchive.performanceUtilityThrows")} value={number(utilityRows.reduce((sum, row) => sum + Number(row.throws || 0), 0))} detail={t("playerArchive.throws")} />
+              <StatCard icon={Users} label={t("playerArchive.performanceFlashAssistedKills")} value={performanceTactical.availableMatches ? number(performanceTactical.flashAssistedKills) : "—"} detail={t("playerArchive.performanceObservedOnly")} />
+              {utilityDamageRows.map((row) => <StatCard key={row.label} label={performanceUtilityName(row.label, locale)} value={number(row.damage)} detail={t("playerArchive.damage")} />)}
+            </div>
+            <div className="player-profile__performance-tables">
+              <section className="player-profile__panel"><header><strong>{t("playerArchive.performanceUtilityByType")}</strong><small>{t("playerArchive.performanceObservedOnly")}</small></header>
+                <div className="player-profile__table-scroll"><table><thead><tr><th>{t("playerArchive.utilityUsage")}</th><th>{t("playerArchive.throws")}</th></tr></thead><tbody>{utilityRows.map((row) => <tr key={row.label}><td>{performanceUtilityName(row.label, locale)}</td><td>{number(row.throws)}</td></tr>)}{!utilityRows.length && <tr><td colSpan="2">{t("playerArchive.noAnalyzedMatches")}</td></tr>}</tbody></table></div>
+              </section>
+              <section className="player-profile__panel"><header><strong>{t("playerArchive.performanceUtilityDamageByType")}</strong><small>{t("playerArchive.performanceObservedOnly")}</small></header>
+                <div className="player-profile__table-scroll"><table><thead><tr><th>{t("playerArchive.weapon")}</th><th>{t("playerArchive.damage")}</th><th>{t("playerArchive.killsShort")}</th></tr></thead><tbody>{utilityDamageRows.map((row) => <tr key={row.label}><td>{performanceUtilityName(row.label, locale)}</td><td>{number(row.damage)}</td><td>{number(row.kills)}</td></tr>)}{!utilityDamageRows.length && <tr><td colSpan="3">{t("playerArchive.noAnalyzedMatches")}</td></tr>}</tbody></table></div>
+              </section>
+            </div>
+          </>}
+
+          {activePerformanceTab === "clutch" && <>
+            <div className="player-profile__stat-grid player-profile__performance-grid">
+              <StatCard icon={Swords} label={t("playerArchive.clutchRate")} value={<RateText value={metrics.clutchRate} />} detail={`${number(metrics.clutchWins)} / ${number(metrics.clutchAttempts)} ${t("playerArchive.attempts")}`} tone="is-accent" />
+              <StatCard icon={Target} label={t("playerArchive.clutchWins")} value={number(metrics.clutchWins)} detail={`${number(metrics.clutchAttempts)} ${t("playerArchive.attempts")}`} />
+              <StatCard label={t("playerArchive.performanceClutchRounds")} value={number(metrics.clutchAttempts)} detail={t("playerArchive.performanceObservedOnly")} />
+            </div>
+            <section className="player-profile__panel player-profile__performance-table"><header><strong>{t("playerArchive.clutchBreakdown")}</strong><small>{t("playerArchive.performanceClutchScope")}</small></header>
+              <div className="player-profile__table-scroll"><table><thead><tr><th>{t("playerArchive.situation")}</th><th>{t("playerArchive.attempts")}</th><th>{t("playerArchive.clutchWins")}</th><th>{t("playerArchive.clutchRate")}</th></tr></thead><tbody>{clutchRows.map((row) => <tr key={row.label}><td>{row.label}</td><td>{number(row.attempts)}</td><td>{number(row.wins)}</td><td><RateText value={row.attempts ? row.wins / row.attempts * 100 : null} /></td></tr>)}{!clutchRows.length && <tr><td colSpan="4">{t("playerArchive.noAnalyzedMatches")}</td></tr>}</tbody></table></div>
+            </section>
+          </>}
+        </section>}
+
+        {activeTab === "positions" && <div className="player-profile__position-analysis">
+          <header className="player-profile__position-header">
+            <div><strong>{t("playerArchive.positionAnalysis")}</strong><p>{t("playerArchive.positionAnalysisHint")}</p></div>
+            <label><MapIcon size={14} /><span>{t("playerArchive.map")}</span><select value={positionMapName} onChange={(event) => setPositionMapName(event.target.value)} aria-label={t("playerArchive.map")}><option value="">{t("playerArchive.selectMap")}</option>{(profile.maps || []).map((item) => <option key={item.map_name} value={item.map_name}>{item.map_name}</option>)}</select></label>
+          </header>
+          {!positionMapName ? <div className="player-profile__empty">{t("playerArchive.positionSampleNoMap")}</div>
+            : !positionTactical.availableMatches ? <div className="player-profile__empty">{t("playerArchive.tacticalNeedsReanalysis")}</div>
+              : <div className="player-profile__position-layout">
+                <div className="player-profile__position-matrices">
+                  <PositionMatrix
+                    title={t("playerArchive.duelWinRate")}
+                    note={t("playerArchive.duelMatrixNote", { matches: number(positionTactical.availableMatches) })}
+                    metric="duel"
+                    ownAreas={positionTactical.ownAreas}
+                    enemyAreas={positionTactical.enemyAreas}
+                    cellMap={tacticalPositionCellMap}
+                    rounds={positionTactical.rounds}
+                    activePosition={activePosition}
+                    onHover={setHoveredPosition}
+                    onSelect={setSelectedPosition}
+                    t={t}
+                  />
+                  <PositionMatrix
+                    title={t("playerArchive.kpr")}
+                    note={t("playerArchive.positionKprNote", { rounds: number(positionTactical.rounds) })}
+                    metric="kpr"
+                    ownAreas={positionTactical.ownAreas}
+                    enemyAreas={positionTactical.enemyAreas}
+                    cellMap={tacticalPositionCellMap}
+                    rounds={positionTactical.rounds}
+                    activePosition={activePosition}
+                    onHover={setHoveredPosition}
+                    onSelect={setSelectedPosition}
+                    t={t}
+                  />
+                </div>
+                <div className="player-profile__position-preview">
+                  <PositionRadarPreview
+                    mapName={positionMapName}
+                    transform={positionTactical.mapTransform}
+                    sample={activePositionSample}
+                    ownArea={activePositionCell?.ownArea}
+                    enemyArea={activePositionCell?.enemyArea}
+                    t={t}
+                  />
+                  <div className="player-profile__stat-grid player-profile__position-summary">
+                    <StatCard icon={Swords} label={t("playerArchive.duelWinRate")} value={<RateText value={positionTactical.duelWinRate} />} detail={t("playerArchive.duelRecord", { wins: number(positionTactical.duelWins), losses: number(positionTactical.duelLosses), attempts: number(positionTactical.duelAttempts) })} tone="is-accent" />
+                    <StatCard icon={Target} label={t("playerArchive.kpr")} value={number(positionStats.kpr, 2)} detail={t("playerArchive.perRound", { rounds: number(positionStats.rounds) })} />
+                  </div>
+                </div>
+              </div>}
         </div>}
 
         {activeTab === "matches" && <section className="player-profile__panel player-profile__panel--wide"><header><strong>{t("playerArchive.matches")}</strong><small>{scopedMatches.length} · {t("playerArchive.analysisCoverage", { analyzed: metrics.matches, total: scopedMatches.length })}</small></header>

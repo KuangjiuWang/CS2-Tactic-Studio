@@ -172,6 +172,7 @@ def _aggregate(rows: list[dict[str, Any]], memberships: dict[str, list[str]]) ->
 
 _ANALYSIS_FIELDS = (
     "kills", "deaths", "assists", "damage", "adr", "kast", "headshots", "hs_percent",
+    "gun_hit_events",
     "first_kills", "first_deaths", "trade_kills", "trade_deaths",
     "clutch_attempts", "clutch_wins", "utility_damage", "utility_damage_per_round",
     "kpr", "dpr", "survival_rate", "trade_kill_rate", "one_kill_rounds",
@@ -254,6 +255,11 @@ def _detail_breakdowns(
         for row in (player.get("round_damage") or [])
         if isinstance(row, dict) and _safe_int(row.get("round_number")) > 0
     }
+    gun_hits_by_round = {
+        _safe_int(row.get("round_number")): max(0, _safe_int(row.get("count")))
+        for row in (player.get("gun_hit_events_by_round") or [])
+        if isinstance(row, dict) and _safe_int(row.get("round_number")) > 0
+    }
     side_breakdown: dict[str, dict[str, int]] = {}
     economy_breakdown: dict[str, dict[str, int]] = {}
     weapon_breakdown: dict[str, dict[str, int]] = {}
@@ -270,7 +276,7 @@ def _detail_breakdowns(
         return target.setdefault(label, {
             "rounds": 0, "wins": 0, "kills": 0, "deaths": 0, "assists": 0,
             "headshots": 0, "damage": 0, "utility_damage": 0, "damage_samples": 0,
-            "awp_kills": 0,
+            "awp_kills": 0, "gun_hit_events": 0, "shots_fired": 0,
             "first_kills": 0, "first_deaths": 0, "trade_kills": 0, "trade_deaths": 0,
             "clutch_attempts": 0, "clutch_wins": 0, "kast_rounds": 0, "survived_rounds": 0,
         })
@@ -330,7 +336,7 @@ def _detail_breakdowns(
                     side_economy_breakdown, side_label, economy_label,
                     {"rounds": 0, "wins": 0, "kills": 0, "deaths": 0, "assists": 0,
                      "headshots": 0, "damage": 0, "utility_damage": 0, "damage_samples": 0,
-                     "awp_kills": 0,
+                     "awp_kills": 0, "gun_hit_events": 0, "shots_fired": 0,
                      "first_kills": 0, "first_deaths": 0, "trade_kills": 0, "trade_deaths": 0,
                      "clutch_attempts": 0, "clutch_wins": 0, "kast_rounds": 0, "survived_rounds": 0},
                 )
@@ -340,6 +346,9 @@ def _detail_breakdowns(
                 side_economy_bucket["utility_damage"] += max(0, _safe_int(damage_row.get("utility_damage")))
                 side_economy_bucket["damage_samples"] += int(round_number in round_damage)
                 active_buckets.append(side_economy_bucket)
+
+        for active in active_buckets:
+            active["gun_hit_events"] += gun_hits_by_round.get(round_number, 0)
 
         events = [event for event in (round_row.get("events") or []) if isinstance(event, dict)]
         kills = sorted(
@@ -439,6 +448,8 @@ def _detail_breakdowns(
                 continue
             weapon = str(shot.get("weapon") or "unknown").strip().casefold() or "unknown"
             weapon_breakdown.setdefault(weapon, {"kills": 0, "headshots": 0, "damage": 0, "shots_fired": 0})["shots_fired"] += 1
+            for active in active_buckets:
+                active["shots_fired"] += 1
             if side_label:
                 nested_bucket(
                     side_weapon_breakdown, side_label, weapon,
@@ -483,6 +494,11 @@ def _detail_breakdowns(
                 weapon_breakdown.setdefault(weapon_key, {"kills": 0, "headshots": 0, "damage": 0, "shots_fired": 0})["damage"] += max(0, _safe_int(amount))
 
     return {
+        "gun_hit_events": sum(gun_hits_by_round.values()),
+        "shots_fired": sum(
+            max(0, _safe_int(row.get("shots_fired")))
+            for row in weapon_breakdown.values()
+        ),
         "side_breakdown": side_breakdown,
         "economy_breakdown": economy_breakdown,
         "economy_source": "player_loadout" if "player_loadout" in economy_sources and "team_context" not in economy_sources
@@ -505,6 +521,7 @@ def _analysis_metrics(
 ) -> dict[str, Any]:
     count_fields = {
         "kills", "deaths", "assists", "damage", "headshots", "first_kills", "first_deaths",
+        "gun_hit_events",
         "trade_kills", "trade_deaths", "clutch_attempts", "clutch_wins", "utility_damage",
         "one_kill_rounds", "two_kill_rounds", "three_kill_rounds", "four_kill_rounds",
         "five_kill_rounds", "awp_kills",
@@ -554,6 +571,10 @@ def _analysis_metrics(
         metrics["opponent_name"] = str((workspace or {}).get("team_b_name" if team_key == "a" else "team_a_name") or "")
     metrics["data_version"] = 2
     metrics.update(_detail_breakdowns(workspace or {}, player))
+    metrics["gun_hit_events_available"] = bool(
+        player.get("gun_hit_events_available", (workspace or {}).get("gun_hit_data_available"))
+    )
+    metrics["shot_data_available"] = bool((workspace or {}).get("shot_data_available"))
     side_round_wins = sum(
         _safe_int(bucket.get("wins")) for bucket in metrics["side_breakdown"].values()
     )
@@ -677,8 +698,22 @@ def _event_position(event: dict[str, Any], role: str) -> dict[str, float] | None
         except (TypeError, ValueError, OverflowError):
             continue
         if math.isfinite(x) and math.isfinite(y):
-            return {"x": x, "y": y}
+            point = {"x": x, "y": y}
+            try:
+                z = float(event.get(f"{prefix}_z"))
+            except (TypeError, ValueError, OverflowError):
+                z = None
+            if z is not None and math.isfinite(z):
+                point["z"] = z
+            return point
     return None
+
+
+def _position_area(value: object) -> str:
+    text = " ".join(str(value or "").split())
+    if not text or text.casefold() in {"nan", "nat", "none", "null", "undefined"}:
+        return "未知区域"
+    return text
 
 
 def _player_tactical_metrics(
@@ -716,22 +751,54 @@ def _player_tactical_metrics(
         "site_break_3k": 0,
         "site_hold_2k": 0,
         "site_hold_3k": 0,
+        "site_break_kills": 0,
+        "site_hold_kills": 0,
         "site_area_kills": 0,
+        "flash_assisted_kills": 0,
+        "flash_assisted_kills_by_side": {},
+        "duel_kill_time_by_side": {},
+        "position_kill_cells": [],
         "site_breakdown": [],
     }
-    if int(workspace.get("tactical_metrics_version") or 0) < 1:
+    if int(workspace.get("tactical_metrics_version") or 0) < 4:
         return empty
 
-    cells: dict[tuple[str, str, str], dict[str, int]] = {}
+    cells: dict[tuple[str, str, str], dict[str, Any]] = {}
     duel_wins = 0
     duel_losses = 0
+    kill_time_by_side: dict[str, dict[str, float]] = {}
+    flash_assisted_kills_by_side: dict[str, int] = {}
+    tick_rate = max(1.0, _safe_float(workspace.get("tick_rate"), 64.0))
+    flash_assisted_kills = 0
     for row in workspace.get("duel_engagements") or []:
         if not isinstance(row, dict) or not is_player(row.get("player"), row.get("player_steam_id64")):
             continue
         side = str(row.get("side") or "unknown").upper()
-        own_area = str(row.get("own_area") or "未知区域").strip()
-        enemy_area = str(row.get("enemy_area") or "未知区域").strip()
-        cell = cells.setdefault((side, own_area, enemy_area), {"wins": 0, "losses": 0})
+        if row.get("result") == "win":
+            elapsed_ticks = _safe_int(row.get("end_tick")) - _safe_int(row.get("tick"))
+            if elapsed_ticks >= 0 and side in {"T", "CT"}:
+                bucket = kill_time_by_side.setdefault(side, {"total_ms": 0.0, "samples": 0.0})
+                bucket["total_ms"] += elapsed_ticks / tick_rate * 1000.0
+                bucket["samples"] += 1
+        own_area = _position_area(row.get("own_area"))
+        enemy_area = _position_area(row.get("enemy_area"))
+        cell_key = (side, own_area.casefold(), enemy_area.casefold())
+        cell = cells.setdefault(cell_key, {
+            "side": side,
+            "own_area": own_area,
+            "enemy_area": enemy_area,
+            "wins": 0,
+            "losses": 0,
+            "sample": None,
+        })
+        if cell["sample"] is None:
+            own_position = row.get("own_position")
+            enemy_position = row.get("enemy_position")
+            if own_position or enemy_position:
+                cell["sample"] = {
+                    "own_position": own_position,
+                    "enemy_position": enemy_position,
+                }
         if row.get("result") == "win":
             cell["wins"] += 1
             duel_wins += 1
@@ -741,6 +808,7 @@ def _player_tactical_metrics(
 
     kills_by_site: dict[tuple[int, str, str, str], list[dict[str, Any]]] = {}
     first_kills: dict[tuple[int, str, str], dict[str, Any]] = {}
+    position_kills: dict[tuple[str, str, str], dict[str, Any]] = {}
     for round_row in workspace.get("rounds") or []:
         if not isinstance(round_row, dict):
             continue
@@ -748,6 +816,34 @@ def _player_tactical_metrics(
         for event in round_row.get("events") or []:
             if not isinstance(event, dict) or event.get("type") != "kill":
                 continue
+            if event.get("assistedflash") and is_player(event.get("assister")):
+                flash_assisted_kills += 1
+                assist_side = str(event.get("actor_side") or "").upper()
+                if assist_side in {"T", "CT"}:
+                    flash_assisted_kills_by_side[assist_side] = flash_assisted_kills_by_side.get(assist_side, 0) + 1
+            if is_player(event.get("actor"), event.get("actor_steamid")):
+                side = str(event.get("actor_side") or "unknown").upper()
+                own_area = _position_area(event.get("actor_place"))
+                enemy_area = _position_area(event.get("target_place"))
+                cell_key = (side, own_area.casefold(), enemy_area.casefold())
+                cell = position_kills.setdefault(cell_key, {
+                    "side": side,
+                    "own_area": own_area,
+                    "enemy_area": enemy_area,
+                    "kills": 0,
+                    "rounds": set(),
+                    "sample": None,
+                })
+                cell["kills"] += 1
+                cell["rounds"].add(round_number)
+                if cell["sample"] is None:
+                    own_position = _event_position(event, "actor")
+                    enemy_position = _event_position(event, "target")
+                    if own_position or enemy_position:
+                        cell["sample"] = {
+                            "own_position": own_position,
+                            "enemy_position": enemy_position,
+                        }
             site = str(event.get("tactical_site") or "").upper()
             role = str(event.get("tactical_role") or "").lower()
             if site not in {"A", "B"} or role not in {"break", "hold"}:
@@ -762,16 +858,32 @@ def _player_tactical_metrics(
     counters["available"] = True
     counters["duel_wins"] = duel_wins
     counters["duel_losses"] = duel_losses
+    counters["duel_kill_time_by_side"] = kill_time_by_side
+    counters["flash_assisted_kills"] = flash_assisted_kills
+    counters["flash_assisted_kills_by_side"] = flash_assisted_kills_by_side
     counters["duel_cells"] = [
         {
-            "side": side,
-            "own_area": own_area,
-            "enemy_area": enemy_area,
+            "side": values["side"],
+            "own_area": values["own_area"],
+            "enemy_area": values["enemy_area"],
             "wins": values["wins"],
             "losses": values["losses"],
+            "sample": values["sample"],
         }
-        for (side, own_area, enemy_area), values in sorted(cells.items())
+        for _, values in sorted(cells.items())
     ]
+    counters["position_kill_cells"] = [
+        {
+            "side": values["side"],
+            "own_area": values["own_area"],
+            "enemy_area": values["enemy_area"],
+            "kills": values["kills"],
+            "rounds": len(values["rounds"]),
+            "sample": values["sample"],
+        }
+        for _, values in sorted(position_kills.items())
+    ]
+    counters["map_transform"] = workspace.get("map_transform")
     site_breakdown: dict[str, dict[str, Any]] = {}
 
     def site_row(site: str) -> dict[str, Any]:
@@ -811,7 +923,13 @@ def _player_tactical_metrics(
         if len(cluster) >= 3:
             counters[f"site_{role}_3k"] += 1
             site_row(site)[f"{role}_3k"] += 1
-    counters["site_area_kills"] = sum(len(events) for events in kills_by_site.values())
+    counters["site_break_kills"] = sum(
+        len(events) for key, events in kills_by_site.items() if key[2] == "break"
+    )
+    counters["site_hold_kills"] = sum(
+        len(events) for key, events in kills_by_site.items() if key[2] == "hold"
+    )
+    counters["site_area_kills"] = counters["site_break_kills"] + counters["site_hold_kills"]
     counters["site_breakdown"] = [site_breakdown[key] for key in sorted(site_breakdown)]
     return counters
 

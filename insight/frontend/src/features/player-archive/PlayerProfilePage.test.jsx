@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import API from "../../api/api";
+import { useLocaleStore } from "../../i18n/localeStore.js";
 import PlayerProfilePage, { aggregateMatches } from "./PlayerProfilePage.jsx";
 
 vi.mock("../../api/api", () => ({ default: { get: vi.fn(), put: vi.fn() } }));
@@ -83,6 +84,7 @@ function renderProfileWithSearch(search) {
 describe("PlayerProfilePage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useLocaleStore.setState({ locale: "en", effectiveLocale: "en", hydrated: true });
     API.get.mockResolvedValue({ data: profile });
     API.put.mockResolvedValue({ data: { groups: [] } });
   });
@@ -132,6 +134,41 @@ describe("PlayerProfilePage", () => {
     expect(await screen.findByText("ak47")).toBeTruthy();
     expect(screen.getByText("Classified by the player's per-round equipment")).toBeTruthy();
     expect(screen.getByText("smoke")).toBeTruthy();
+  });
+
+  test("shows all five performance sections and keeps Demo event counts distinct from accuracy", async () => {
+    const performanceProfile = structuredClone(profile);
+    const selectedMatch = performanceProfile.analysis_matches[0];
+    selectedMatch.metrics = {
+      ...selectedMatch.metrics,
+      gun_hit_events: 4,
+      shots_fired: 21,
+      gun_hit_events_available: true,
+      shot_data_available: true,
+      weapon_breakdown: {
+        hegrenade: { kills: 1, headshots: 0, damage: 48, shots_fired: 0 },
+      },
+      utility_breakdown: {
+        smoke: { throws: 2 },
+        flash: { throws: 1 },
+      },
+    };
+    API.get.mockResolvedValue({ data: performanceProfile });
+    renderProfile();
+    await screen.findByRole("heading", { name: "Anchor" });
+    fireEvent.click(screen.getByRole("tab", { name: "Performance Data" }));
+
+    for (const name of ["Aim", "Attack", "Defense", "Utility", "Clutch"]) {
+      expect(screen.getByRole("tab", { name })).toBeTruthy();
+    }
+    const gunEvents = screen.getByText("Gun damage events").closest("article");
+    expect(gunEvents.textContent).toContain("4");
+    expect(gunEvents.textContent).toContain("21");
+    expect(gunEvents.textContent).not.toContain("4 / 21");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Utility" }));
+    expect(await screen.findByText("Smoke Grenade")).toBeTruthy();
+    expect(screen.getAllByText("High Explosive Grenade").length).toBeGreaterThan(0);
   });
 
   test("shows opponent records and exact saved coordinates, then seeks the replay", async () => {

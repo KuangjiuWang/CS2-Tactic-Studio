@@ -109,7 +109,7 @@ _SHARED_BATCH_PLAYER_FIELDS = (
 )
 
 _SHARED_BATCH_OTHER_FIELDS = tuple(dict.fromkeys(
-    [*_EXTRA_EVENT_FIELDS, "site", "total_rounds_played", "winner", "reason"]
+    [*_EXTRA_EVENT_FIELDS, "site", "weapon", "total_rounds_played", "winner", "reason"]
 ))
 
 

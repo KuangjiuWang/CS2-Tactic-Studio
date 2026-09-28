@@ -191,7 +191,7 @@ export default function PlayerArchivePage() {
           <span>{loading ? "…" : t("playerArchive.playerCount", { count: formatNumber(directory.total || 0) })}</span>
         </div>
 
-        {error && <div className="player-directory__error" role="alert">{error}<button type="button" onClick={() => setQuery((value) => `${value}`)}>{t("playerArchive.retry")}</button></div>}
+        {error && <div className="player-directory__error" role="alert">{error}<button type="button" onClick={() => setRefreshRevision((revision) => revision + 1)}>{t("playerArchive.retry")}</button></div>}
 
         <section className={`player-directory__table is-${section}`} aria-label={groupTitle}>
           <div className="player-directory__table-head"><span>{t("playerArchive.player")}</span><span>{t("playerArchive.maps")}</span><span>{t("playerArchive.matchesPlayed")}</span><span>{t("playerArchive.kd")}</span><span>{t("playerArchive.actions")}</span></div>

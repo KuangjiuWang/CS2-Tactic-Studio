@@ -33,13 +33,13 @@ _GRENADE_WEAPON_KINDS = {
     "decoy": _GRENADE_PROJECTILES["CDecoyProjectile"],
 }
 _NON_BULLET_WEAPONS = {
-    "", "c4", "knife", "knife_t", "taser", "hegrenade", "flashbang",
-    "smokegrenade", "molotov", "incgrenade", "incendiary", "decoy",
+    "", "c4", "planted_c4", "world", "knife", "knife_t", "taser", "zeus_x27",
+    "hegrenade", "flashbang", "smokegrenade", "molotov", "incgrenade", "incendiary", "decoy",
 }
 _KILL_NUMERALS = {2: "双", 3: "三", 4: "四", 5: "五"}
 
 # Bump whenever the saved analysis workspace schema or derived metrics change.
-MATCH_WORKSPACE_ALGORITHM_VERSION = "match-workspace-2026.09.28-player-tactics-v1"
+MATCH_WORKSPACE_ALGORITHM_VERSION = "match-workspace-2026.09.28-player-tactics-v4"
 
 
 def _clean_name(value: object) -> str:
@@ -119,12 +119,10 @@ def _event_player_position(row: Any, prefixes: tuple[str, ...]) -> Optional[dict
 
 def _event_player_place(row: Any, prefixes: tuple[str, ...]) -> str:
     for prefix in prefixes:
-        place = _clean_name(
-            row.get(f"{prefix}_last_place_name")
-            or row.get(f"{prefix}_place_name")
-        )
-        if place:
-            return place
+        for suffix in ("last_place_name", "place_name"):
+            place = _clean_name(row.get(f"{prefix}_{suffix}"))
+            if place:
+                return place
     return ""
 
 
@@ -152,7 +150,15 @@ def _build_duel_engagements(
         tick = _int(row.get("tick"))
         attacker = _clean_name(row.get("attacker_name"))
         victim = _clean_name(row.get("user_name") or row.get("player_name"))
+        weapon = _normalize_weapon(row.get("weapon"))
         if tick <= 0 or not attacker or not victim or attacker.casefold() == victim.casefold():
+            continue
+        if (
+            not weapon
+            or weapon in _NON_BULLET_WEAPONS
+            or weapon in _UTILITY_WEAPONS
+            or weapon.startswith("knife")
+        ):
             continue
         round_number = _round_number_for_tick(tick, windows, row)
         if round_number <= 0:
@@ -588,6 +594,7 @@ def _events_by_round(
                 "target": victim,
                 "weapon": _normalize_weapon(row.get("weapon")),
                 "headshot": _bool(row.get("headshot")),
+                "assistedflash": _bool(row.get("assistedflash")),
                 "assister": _clean_name(row.get("assister_name")),
                 "actor_steamid": _clean_name(row.get("attacker_steamid")),
                 "target_steamid": _clean_name(row.get("user_steamid")),
@@ -1170,10 +1177,31 @@ def _player_stats(
     rounds_with_death: dict[str, set[int]] = defaultdict(set)
     rounds_with_assist: dict[str, set[int]] = defaultdict(set)
     rounds_traded: dict[str, set[int]] = defaultdict(set)
+    gun_hits_by_player_round: dict[tuple[str, int], int] = defaultdict(int)
     counters: dict[str, Counter] = defaultdict(Counter)
     multi_kills: dict[str, Counter] = defaultdict(Counter)
     winners = round_winner_team or {}
     special_events_by_round: dict[int, list[dict[str, Any]]] = defaultdict(list)
+
+    if hurt_df is not None and not hurt_df.empty:
+        for _, row in hurt_df.iterrows():
+            attacker = _clean_name(row.get("attacker_name"))
+            victim = _clean_name(row.get("user_name") or row.get("player_name"))
+            tick = _int(row.get("tick"))
+            weapon = _normalize_weapon(row.get("weapon"))
+            if (
+                not attacker or not victim or attacker.casefold() == victim.casefold()
+                or weapon in _NON_BULLET_WEAPONS or weapon in _UTILITY_WEAPONS
+                or weapon.startswith("knife") or _hurt_damage_value(row) <= 0
+            ):
+                continue
+            attacker_team = player_team.get(attacker.casefold())
+            victim_team = player_team.get(victim.casefold())
+            if attacker_team and victim_team and attacker_team == victim_team:
+                continue
+            round_number = _round_number_for_tick(tick, windows or [], row)
+            if round_number > 0:
+                gun_hits_by_player_round[(attacker.casefold(), round_number)] += 1
 
     for round_number in round_numbers:
         kills = [event for event in events_by_round.get(round_number, []) if event.get("type") == "kill"]
@@ -1367,6 +1395,16 @@ def _player_stats(
             "awp_kills": int(counter["awp_kills"]),
             "utility_damage": int(counter["utility_damage"]),
             "utility_damage_per_round": round(counter["utility_damage"] / total_rounds, 1),
+            "gun_hit_events": sum(
+                count for (player_key, _round), count in gun_hits_by_player_round.items()
+                if player_key == key
+            ),
+            "gun_hit_events_by_round": [
+                {"round_number": round_number, "count": count}
+                for (player_key, round_number), count in sorted(gun_hits_by_player_round.items())
+                if player_key == key
+            ],
+            "gun_hit_events_available": isinstance(hurt_df, pd.DataFrame),
             "average_equipment_value": round(avg_equipment),
             "economy_rounds": economy_rounds,
             "round_damage": round_damage,
@@ -1662,7 +1700,9 @@ def build_match_workspace(
     return {
         "version": 1,
         "algorithm_version": MATCH_WORKSPACE_ALGORITHM_VERSION,
-        "tactical_metrics_version": 1,
+        "tactical_metrics_version": 4,
+        "gun_hit_data_available": isinstance(shared_events.get("hurt_df"), pd.DataFrame),
+        "shot_data_available": any(shots_by_round.values()),
         "data_source": "demo_parser_with_derived_metrics",
         "team_assignment_source": (
             "round_side_groups" if group_side_by_round else "roster_order_fallback"
