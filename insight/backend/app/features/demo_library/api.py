@@ -44,6 +44,60 @@ def _split_csv_query_param(s: Optional[str]) -> list[str]:
     return [p.strip() for p in str(s).split(",") if p.strip()]
 
 
+class DemoFolderCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+
+
+class DemoFolderAssign(BaseModel):
+    demo_ids: list[int] = Field(..., min_length=1, max_length=10_000)
+    folder_id: Optional[int] = Field(default=None, gt=0)
+
+
+@router.get("/api/demo-folders")
+async def list_demo_folders():
+    return await demo_db.list_demo_folders()
+
+
+@router.post("/api/demo-folders")
+async def create_demo_folder(body: DemoFolderCreate):
+    try:
+        folder = await demo_db.create_demo_folder(body.name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    await demo_library_hub.notify("folders")
+    return folder
+
+
+@router.patch("/api/demo-folders/{folder_id}")
+async def rename_demo_folder(folder_id: int, body: DemoFolderCreate):
+    try:
+        ok = await demo_db.rename_demo_folder(folder_id, body.name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not ok:
+        raise HTTPException(404, f"Demo folder not found: {folder_id}")
+    await demo_library_hub.notify("folders")
+    return {"id": folder_id, "name": body.name.strip()}
+
+
+@router.delete("/api/demo-folders/{folder_id}")
+async def delete_demo_folder(folder_id: int):
+    if not await demo_db.delete_demo_folder(folder_id):
+        raise HTTPException(404, f"Demo folder not found: {folder_id}")
+    await demo_library_hub.notify("folders")
+    return {"ok": True, "folder_id": folder_id}
+
+
+@router.put("/api/demo-folders/assign")
+async def assign_demos_to_folder(body: DemoFolderAssign):
+    try:
+        changed = await demo_db.assign_demos_to_folder(body.demo_ids, body.folder_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    await demo_library_hub.notify("folders")
+    return {"updated": changed, "folder_id": body.folder_id}
+
+
 def _demo_library_filters_from_query(
     *,
     map_names: Optional[str],
@@ -62,6 +116,7 @@ def _demo_library_filters_from_query(
     duration_max: Optional[float] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    folder_id: Optional[str] = None,
 ) -> DemoListFilters:
     f: DemoListFilters = {}
     mns = _split_csv_query_param(map_names)
@@ -99,6 +154,17 @@ def _demo_library_filters_from_query(
         f["date_from"] = str(date_from).strip()
     if date_to and str(date_to).strip():
         f["date_to"] = str(date_to).strip()
+    folder_scope = str(folder_id or "").strip()
+    if folder_scope == "unfiled":
+        f["folder_id"] = "unfiled"
+    elif folder_scope:
+        try:
+            parsed_folder_id = int(folder_scope)
+        except ValueError as exc:
+            raise HTTPException(422, "folder_id must be a folder ID or 'unfiled'") from exc
+        if parsed_folder_id <= 0:
+            raise HTTPException(422, "folder_id must be a positive folder ID")
+        f["folder_id"] = parsed_folder_id
     return f
 
 
@@ -131,6 +197,7 @@ async def list_demos(
     duration_max: Optional[float] = Query(default=None, ge=0),
     date_from: Optional[str] = Query(default=None, max_length=32),
     date_to: Optional[str] = Query(default=None, max_length=32),
+    folder_id: Optional[str] = Query(default=None, max_length=32),
 ):
     qn = (q or "").strip() or None
     filters = _demo_library_filters_from_query(
@@ -150,6 +217,7 @@ async def list_demos(
         duration_max=duration_max,
         date_from=date_from,
         date_to=date_to,
+        folder_id=folder_id,
     )
     total = await demo_db.count_demos(name_query=qn, filters=filters or None)
     rows = await demo_db.list_demos(
@@ -182,6 +250,7 @@ async def list_demos_compact_api(
     duration_max: Optional[float] = Query(default=None, ge=0),
     date_from: Optional[str] = Query(default=None, max_length=32),
     date_to: Optional[str] = Query(default=None, max_length=32),
+    folder_id: Optional[str] = Query(default=None, max_length=32),
 ):
     qn = (q or "").strip() or None
     filters = _demo_library_filters_from_query(
@@ -201,6 +270,7 @@ async def list_demos_compact_api(
         duration_max=duration_max,
         date_from=date_from,
         date_to=date_to,
+        folder_id=folder_id,
     )
     total = await demo_db.count_demos(name_query=qn, filters=filters or None)
     rows = await demo_db.list_demos_compact(
@@ -233,6 +303,7 @@ async def list_demo_ids(
     duration_max: Optional[float] = Query(default=None, ge=0),
     date_from: Optional[str] = Query(default=None, max_length=32),
     date_to: Optional[str] = Query(default=None, max_length=32),
+    folder_id: Optional[str] = Query(default=None, max_length=32),
 ):
     qn = (q or "").strip() or None
     filters = _demo_library_filters_from_query(
@@ -252,6 +323,7 @@ async def list_demo_ids(
         duration_max=duration_max,
         date_from=date_from,
         date_to=date_to,
+        folder_id=folder_id,
     )
     ids = await demo_db.list_filtered_demo_ids(
         name_query=qn,

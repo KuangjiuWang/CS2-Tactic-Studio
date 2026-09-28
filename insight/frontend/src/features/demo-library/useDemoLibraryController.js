@@ -54,6 +54,9 @@ export function useDemoLibraryController({
   const [libraryLoadingText, setLibraryLoadingText] = useState("");
   const [libraryPage, setLibraryPage] = useState(1);
   const libraryPageRef = useRef(1);
+  const libraryRefreshSeqRef = useRef(0);
+  const [libraryFolderScope, setLibraryFolderScope] = useState("all");
+  const libraryFolderEffectSkipRef = useRef(true);
   const [libraryHasNextPage, setLibraryHasNextPage] = useState(false);
   const [libraryTotal, setLibraryTotal] = useState(null);
   const [selectedLibraryDemoIds, setSelectedLibraryDemoIds] = useState(new Set());
@@ -94,17 +97,27 @@ export function useDemoLibraryController({
 
   const refreshDemoLibrary = useCallback(
     async (page = libraryPage, opts = {}) => {
-      const { manageLoading = true, searchQ: searchQOverride } = opts;
+      const {
+        manageLoading = true,
+        searchQ: searchQOverride,
+        folderScope: folderScopeOverride,
+      } = opts;
+      const requestId = ++libraryRefreshSeqRef.current;
       if (manageLoading) setLibraryLoading(true);
       try {
         const limit = libraryPageSize;
         const offset = (page - 1) * limit;
         const params = { limit, offset };
+        const effectiveFolderScope = folderScopeOverride ?? libraryFolderScope;
+        if (effectiveFolderScope && effectiveFolderScope !== "all") {
+          params.folder_id = effectiveFolderScope;
+        }
         const effectiveSearch =
           searchQOverride !== undefined ? searchQOverride : librarySearchQ;
         if (effectiveSearch) params.q = effectiveSearch;
         appendFilterParams(params);
         const { data } = await API.get("/demos/compact", { params });
+        if (requestId !== libraryRefreshSeqRef.current) return;
         const items = data.items || [];
         setDemoLibraryItems(items);
         const total = typeof data.total === "number" ? data.total : null;
@@ -118,14 +131,23 @@ export function useDemoLibraryController({
       } catch {
         // A transient refresh failure must not discard the currently visible page.
       } finally {
-        if (manageLoading) setLibraryLoading(false);
+        if (requestId === libraryRefreshSeqRef.current) setLibraryLoading(false);
       }
     },
-    [appendFilterParams, libraryPage, libraryPageSize, librarySearchQ],
+    [appendFilterParams, libraryFolderScope, libraryPage, libraryPageSize, librarySearchQ],
   );
 
   const refreshDemoLibraryRef = useRef(refreshDemoLibrary);
   refreshDemoLibraryRef.current = refreshDemoLibrary;
+
+  useEffect(() => {
+    if (libraryFolderEffectSkipRef.current) {
+      libraryFolderEffectSkipRef.current = false;
+      return;
+    }
+    setLibraryPage(1);
+    void refreshDemoLibraryRef.current(1, { manageLoading: true });
+  }, [libraryFolderScope]);
 
   const handleLibrarySearchSubmit = useCallback(() => {
     const next = librarySearchInput.trim();
@@ -473,6 +495,9 @@ export function useDemoLibraryController({
       const cap = 1000;
       const wanted = libraryTotal != null ? Math.min(libraryTotal, cap) : cap;
       const params = { limit: wanted, offset: 0 };
+      if (libraryFolderScope && libraryFolderScope !== "all") {
+        params.folder_id = libraryFolderScope;
+      }
       if (librarySearchQ) params.q = librarySearchQ;
       appendFilterParams(params);
       const { data } = await API.get("/demos/ids", { params });
@@ -488,7 +513,7 @@ export function useDemoLibraryController({
         { isError: true },
       );
     }
-  }, [appendFilterParams, librarySearchQ, libraryTotal, setProgressText, t]);
+  }, [appendFilterParams, libraryFolderScope, librarySearchQ, libraryTotal, setProgressText, t]);
 
   const clearLibrarySelection = useCallback(() => {
     setSelectedLibraryDemoIds(new Set());
@@ -502,6 +527,8 @@ export function useDemoLibraryController({
     libraryLoadingText,
     libraryPage,
     setLibraryPage,
+    libraryFolderScope,
+    setLibraryFolderScope,
     libraryHasNextPage,
     libraryTotal,
     selectedLibraryDemoIds,

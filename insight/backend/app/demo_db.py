@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable, Literal, Optional
@@ -152,7 +153,17 @@ class DemoDB:
                     source TEXT,
                     watch_root TEXT,
                     remark TEXT,
+                    folder_id INTEGER,
                     has_player_keyboard_input INTEGER
+                )
+                """,
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS demo_folders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                    created_at TEXT NOT NULL
                 )
                 """,
             )
@@ -284,6 +295,8 @@ class DemoDB:
                 alter_stmts.append("ALTER TABLE demo_files ADD COLUMN watch_root TEXT")
             if "remark" not in cols:
                 alter_stmts.append("ALTER TABLE demo_files ADD COLUMN remark TEXT")
+            if "folder_id" not in cols:
+                alter_stmts.append("ALTER TABLE demo_files ADD COLUMN folder_id INTEGER")
             if "content_md5" not in cols:
                 alter_stmts.append("ALTER TABLE demo_files ADD COLUMN content_md5 TEXT")
             if "origin_zip" not in cols:
@@ -337,6 +350,9 @@ class DemoDB:
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_demo_files_filename_nocase ON demo_files(filename COLLATE NOCASE)",
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_demo_files_folder_id ON demo_files(folder_id, id)",
             )
             cur_z = await conn.execute("PRAGMA table_info(zip_extract_state)")
             zcols = {str(r[1]) for r in await cur_z.fetchall()}
@@ -1091,6 +1107,16 @@ class DemoDB:
             if isinstance(status, str) and status.strip():
                 parts.append("d.status = ?")
                 params.append(status.strip())
+        folder_id = f.get("folder_id")
+        if folder_id == "unfiled":
+            parts.append("d.folder_id IS NULL")
+        elif folder_id is not None:
+            try:
+                parts.append("d.folder_id = ?")
+                params.append(int(folder_id))
+            except (TypeError, ValueError):
+                # Invalid scopes must not broaden a folder-specific query.
+                parts.append("0 = 1")
         for key, column, operator, caster in (
             ("rounds_min", "d.total_rounds", ">=", int),
             ("rounds_max", "d.total_rounds", "<=", int),
@@ -1178,14 +1204,14 @@ class DemoDB:
     _LIST_SELECT = """
         SELECT DISTINCT d.id, d.path, d.filename, d.display_name, d.file_size, d.status, d.added_at, d.parsed_at, d.error_msg,
                d.map_name, d.total_rounds, d.team_a_score, d.team_b_score, d.team_a_name, d.team_b_name, d.duration_mins, d.match_date, d.source, d.remark,
-               d.content_md5, d.origin_zip, d.cached_path, d.has_player_keyboard_input,
+               d.content_md5, d.origin_zip, d.cached_path, d.folder_id, d.has_player_keyboard_input,
                r.result_json, r.created_at AS result_created_at
         """
 
     _COMPACT_LIST_SELECT = """
         SELECT DISTINCT d.id, d.path, d.filename, d.display_name, d.file_size, d.status, d.added_at, d.parsed_at, d.error_msg,
                d.map_name, d.total_rounds, d.team_a_score, d.team_b_score, d.team_a_name, d.team_b_name, d.duration_mins, d.match_date, d.source, d.remark,
-               d.content_md5, d.origin_zip, d.cached_path, d.has_player_keyboard_input,
+               d.content_md5, d.origin_zip, d.cached_path, d.folder_id, d.has_player_keyboard_input,
                CASE WHEN rs.demo_path IS NULL THEN 0 ELSE 1 END AS has_result,
                COALESCE(rs.clip_count, 0) AS clip_count,
                rs.primary_target,
@@ -2037,6 +2063,111 @@ class DemoDB:
             )
             await conn.commit()
             return cur.rowcount > 0
+
+    async def list_demo_folders(self) -> dict[str, Any]:
+        """Return named virtual folders and the number of unfiled library demos."""
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cur = await conn.execute(
+                """
+                SELECT f.id, f.name, COUNT(d.id) AS demo_count
+                FROM demo_folders f
+                LEFT JOIN demo_files d
+                  ON d.folder_id = f.id AND d.status != 'pending'
+                GROUP BY f.id, f.name
+                ORDER BY f.name COLLATE NOCASE, f.id
+                """
+            )
+            folders = [dict(row) for row in await cur.fetchall()]
+            cur = await conn.execute(
+                "SELECT COUNT(*) FROM demo_files WHERE status != 'pending' AND folder_id IS NULL"
+            )
+            row = await cur.fetchone()
+        return {"items": folders, "unfiled_count": int(row[0] or 0) if row else 0}
+
+    @staticmethod
+    def _normalize_demo_folder_name(name: str) -> str:
+        normalized = str(name or "").strip()
+        if not normalized:
+            raise ValueError("文件夹名称不能为空")
+        if len(normalized) > 64:
+            raise ValueError("文件夹名称不能超过 64 个字符")
+        if any(char in normalized for char in ("/", "\\", "\0", "\r", "\n")):
+            raise ValueError("文件夹名称不能包含路径分隔符或换行")
+        return normalized
+
+    async def create_demo_folder(self, name: str) -> dict[str, Any]:
+        normalized = self._normalize_demo_folder_name(name)
+        async with aiosqlite.connect(self.db_path) as conn:
+            try:
+                cur = await conn.execute(
+                    "INSERT INTO demo_folders(name, created_at) VALUES (?, ?)",
+                    (normalized, utc_now_iso()),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("同名文件夹已存在") from exc
+            await conn.commit()
+            return {"id": int(cur.lastrowid), "name": normalized, "demo_count": 0}
+
+    async def rename_demo_folder(self, folder_id: int, name: str) -> bool:
+        normalized = self._normalize_demo_folder_name(name)
+        async with aiosqlite.connect(self.db_path) as conn:
+            try:
+                cur = await conn.execute(
+                    "UPDATE demo_folders SET name = ? WHERE id = ?",
+                    (normalized, folder_id),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("同名文件夹已存在") from exc
+            await conn.commit()
+            return cur.rowcount > 0
+
+    async def delete_demo_folder(self, folder_id: int) -> bool:
+        async with aiosqlite.connect(self.db_path) as conn:
+            cur = await conn.execute("SELECT 1 FROM demo_folders WHERE id = ?", (folder_id,))
+            if await cur.fetchone() is None:
+                return False
+            await conn.execute("UPDATE demo_files SET folder_id = NULL WHERE folder_id = ?", (folder_id,))
+            await conn.execute("DELETE FROM demo_folders WHERE id = ?", (folder_id,))
+            await conn.commit()
+        return True
+
+    async def assign_demos_to_folder(
+        self, demo_ids: list[int], folder_id: int | None,
+    ) -> int:
+        ids: list[int] = []
+        seen: set[int] = set()
+        for value in demo_ids:
+            if isinstance(value, bool):
+                continue
+            try:
+                demo_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if demo_id > 0 and demo_id not in seen:
+                seen.add(demo_id)
+                ids.append(demo_id)
+        if not ids:
+            return 0
+        if len(ids) > 10_000:
+            raise ValueError("一次最多整理 10000 个 Demo")
+        async with aiosqlite.connect(self.db_path) as conn:
+            if folder_id is not None:
+                cur = await conn.execute("SELECT 1 FROM demo_folders WHERE id = ?", (folder_id,))
+                if await cur.fetchone() is None:
+                    raise ValueError("目标文件夹不存在")
+            changed = 0
+            # Keep each statement below SQLite's conservative 999-variable limit.
+            for start in range(0, len(ids), 500):
+                batch = ids[start : start + 500]
+                placeholders = ",".join("?" for _ in batch)
+                cur = await conn.execute(
+                    f"UPDATE demo_files SET folder_id = ? WHERE id IN ({placeholders}) AND status != 'pending'",
+                    [folder_id, *batch],
+                )
+                changed += int(cur.rowcount or 0)
+            await conn.commit()
+            return changed
 
     async def update_remark(self, demo_id: int, remark: str | None) -> bool:
         async with aiosqlite.connect(self.db_path) as conn:

@@ -158,6 +158,107 @@ def detect_ffmpeg_save():
     return {"ffmpeg_path": path}
 
 
+class HlaeRepairPayload(BaseModel):
+    hlae_path: Optional[str] = None
+    cs2_path: Optional[str] = None
+    ffmpeg_path: Optional[str] = None
+
+
+@router.post("/api/config/repair-hlae")
+def repair_hlae_setup(payload: HlaeRepairPayload):
+    """Detect installed HLAE and save valid local tool paths without downloading anything."""
+    from ..features.tactical_playbook.hlae_setup import discover_hlae_installation
+    from ..video_composer import MontageComposerError, resolve_ffmpeg_binary, resolve_ffprobe_binary
+
+    cfg = load_config()
+    changed = False
+
+    requested_hlae = str(payload.hlae_path or "").strip() or str(cfg.hlae_path or "").strip()
+    hlae = discover_hlae_installation(requested_hlae)
+    hlae_path = hlae["path"] if hlae else requested_hlae
+    if hlae and cfg.hlae_path != hlae_path:
+        cfg.hlae_path = hlae_path
+        changed = True
+
+    def valid_cs2_path(value: object) -> str | None:
+        raw = str(value or "").strip().strip('"')
+        if not raw:
+            return None
+        try:
+            candidate = Path(raw).expanduser()
+            if candidate.is_file() and candidate.name.lower() == "cs2.exe":
+                return str(candidate.resolve())
+        except (OSError, ValueError):
+            return None
+        return None
+
+    cs2_path = (
+        valid_cs2_path(payload.cs2_path)
+        or valid_cs2_path(cfg.cs2_path)
+        or detect_cs2_path()
+    )
+    if cs2_path and cfg.cs2_path != cs2_path:
+        cfg.cs2_path = cs2_path
+        changed = True
+
+    ffmpeg_path = None
+    ffmpeg_candidates = [payload.ffmpeg_path, cfg.ffmpeg_path]
+    for raw in ffmpeg_candidates:
+        if not str(raw or "").strip():
+            continue
+        try:
+            ffmpeg_bin = resolve_ffmpeg_binary(str(raw))
+            resolve_ffprobe_binary(ffmpeg_bin)
+            ffmpeg_path = str(ffmpeg_bin)
+            break
+        except (MontageComposerError, OSError, ValueError):
+            continue
+    if ffmpeg_path is None:
+        ffmpeg_path = detect_ffmpeg_path()
+    if ffmpeg_path and cfg.ffmpeg_path != ffmpeg_path:
+        cfg.ffmpeg_path = ffmpeg_path
+        changed = True
+
+    if changed:
+        save_config(cfg)
+
+    checks = [
+        {
+            "key": "hlae",
+            "ok": bool(hlae),
+            "issue": None if hlae else "missing",
+            "path": hlae_path,
+        },
+        {
+            "key": "hook",
+            "ok": bool(hlae and hlae.get("hook_ok")),
+            "issue": None if hlae and hlae.get("hook_ok") else ("hook_missing" if hlae else "hlae_missing"),
+            "path": hlae.get("hook_path") if hlae else None,
+        },
+        {
+            "key": "cs2",
+            "ok": bool(cs2_path),
+            "issue": None if cs2_path else "missing",
+            "path": cs2_path or str(payload.cs2_path or cfg.cs2_path or ""),
+        },
+        {
+            "key": "ffmpeg",
+            "ok": bool(ffmpeg_path),
+            "issue": None if ffmpeg_path else "missing",
+            "path": ffmpeg_path or str(payload.ffmpeg_path or cfg.ffmpeg_path or ""),
+        },
+    ]
+    return {
+        "ready": all(item["ok"] for item in checks),
+        "checks": checks,
+        "config": {
+            "hlae_path": hlae_path or cfg.hlae_path or "",
+            "cs2_path": cs2_path or str(payload.cs2_path or cfg.cs2_path or ""),
+            "ffmpeg_path": ffmpeg_path or str(payload.ffmpeg_path or cfg.ffmpeg_path or ""),
+        },
+    }
+
+
 def open_directory(folder: str, failure_message: str) -> dict[str, Any]:
     try:
         if sys.platform == "win32":

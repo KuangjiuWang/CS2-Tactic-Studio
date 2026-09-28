@@ -138,6 +138,8 @@ export default function SettingsPage() {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [hlaeRepairBusy, setHlaeRepairBusy] = useState(false);
+  const [hlaeRepairReport, setHlaeRepairReport] = useState(null);
   const [saveMsg, setSaveMsg] = useState(null);
   const [search, setSearch] = useState("");
   const [activeTab, setActiveTab] = useState(() => resolveTabFromSearch(searchParams));
@@ -457,6 +459,31 @@ export default function SettingsPage() {
       return next;
     });
   }, []);
+
+  const handleHlaeRepair = useCallback(async () => {
+    if (!config || hlaeRepairBusy) return;
+    setHlaeRepairBusy(true);
+    setHlaeRepairReport(null);
+    try {
+      const { data } = await API.post("config/repair-hlae", {
+        hlae_path: config.hlae_path ?? "",
+        cs2_path: config.cs2_path ?? "",
+        ffmpeg_path: config.ffmpeg_path ?? "",
+      });
+      if (data?.config) {
+        setConfig((prev) => prev ? { ...prev, ...data.config } : prev);
+      }
+      setHlaeRepairReport(data);
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      const message = Array.isArray(detail)
+        ? detail.map((item) => typeof item === "object" && item?.msg ? item.msg : String(item)).join("; ")
+        : typeof detail === "string" ? detail : error.message || t("settings.hlaeRepairFailed");
+      setHlaeRepairReport({ error: message });
+    } finally {
+      setHlaeRepairBusy(false);
+    }
+  }, [config, hlaeRepairBusy, t]);
 
   // ─── Save handler (defined early because handleCalibrate depends on it) ───
 
@@ -899,7 +926,7 @@ export default function SettingsPage() {
                 <FieldRow label={t("settings.labelCs2Path")} hint={t("settings.hintCs2Path")} search={search && !matches(t("settings.labelCs2Path") + " " + (config.cs2_path ?? ""))}>
                   <PathPicker
                     value={config.cs2_path ?? ""}
-                    onChange={(v) => set("cs2_path", v)}
+                    onChange={(v) => { set("cs2_path", v); setHlaeRepairReport(null); }}
                     placeholder="cs2.exe"
                     exeName="cs2.exe"
                     detectApi="config/detect-cs2"
@@ -1224,7 +1251,7 @@ export default function SettingsPage() {
                   <FieldRow label={t("settings.labelFfmpegPath")} hint={t("settings.hintFfmpegPath")} search={search && !matches(t("settings.labelFfmpegPath") + " " + (config.ffmpeg_path ?? ""))}>
                     <PathPicker
                       value={config.ffmpeg_path ?? ""}
-                      onChange={(v) => set("ffmpeg_path", v)}
+                      onChange={(v) => { set("ffmpeg_path", v); setHlaeRepairReport(null); }}
                       placeholder="ffmpeg.exe"
                       exeName="ffmpeg.exe"
                       detectApi="config/detect-ffmpeg"
@@ -1446,13 +1473,48 @@ export default function SettingsPage() {
                 ].join(" "))}
               >
                 <FieldRow label={t("settings.labelHlaePath")} hint={t("settings.hintHlaePath")} search={search && !matches(t("settings.labelHlaePath") + " " + (config.hlae_path ?? ""))}>
-                  <PathPicker
-                    value={config.hlae_path ?? ""}
-                    onChange={(value) => set("hlae_path", value)}
-                    placeholder="HLAE.exe"
-                    exeName="HLAE.exe"
-                    t={t}
-                  />
+                  <div className="space-y-2">
+                    <PathPicker
+                      value={config.hlae_path ?? ""}
+                      onChange={(value) => { set("hlae_path", value); setHlaeRepairReport(null); }}
+                      placeholder="HLAE.exe"
+                      exeName="HLAE.exe"
+                      t={t}
+                    />
+                    <button
+                      type="button"
+                      disabled={hlaeRepairBusy}
+                      onClick={() => void handleHlaeRepair()}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-cs2-accent/40 bg-cs2-accent/10 px-2.5 py-1.5 text-xs font-semibold text-cs2-accent transition-colors hover:bg-cs2-accent/15 disabled:cursor-wait disabled:opacity-60"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${hlaeRepairBusy ? "animate-spin" : ""}`} />
+                      {hlaeRepairBusy ? t("settings.hlaeRepairRunning") : t("settings.hlaeRepairButton")}
+                    </button>
+                    <p className="text-[10px] leading-relaxed text-cs2-text-muted">{t("settings.hlaeRepairHint")}</p>
+                    {hlaeRepairReport?.error ? (
+                      <p role="alert" className="text-[11px] text-red-400">{t("settings.hlaeRepairFailed", { message: hlaeRepairReport.error })}</p>
+                    ) : hlaeRepairReport?.checks ? (
+                      <div className="space-y-1 rounded-md border border-cs2-border/70 bg-cs2-bg-input/35 p-2.5">
+                        {hlaeRepairReport.checks.map((check) => (
+                          <div key={check.key} className="flex min-w-0 items-start gap-2 text-[11px]">
+                            {check.ok
+                              ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                              : <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-400" />}
+                            <span className={`shrink-0 font-semibold ${check.ok ? "text-emerald-400" : "text-red-400"}`}>
+                              {t(`settings.hlaeCheck.${check.key}`)}
+                            </span>
+                            <span className="min-w-0 break-all text-cs2-text-muted">
+                              {check.ok ? t("settings.hlaeCheckReady") : t(`settings.hlaeIssue.${check.issue}`)}
+                              {check.path ? ` · ${check.path}` : ""}
+                            </span>
+                          </div>
+                        ))}
+                        <p className={`pt-1 text-[10px] leading-relaxed ${hlaeRepairReport.ready ? "text-emerald-400" : "text-cs2-text-muted"}`}>
+                          {t(hlaeRepairReport.ready ? "settings.hlaeRepairReady" : "settings.hlaeRepairNextStep")}
+                        </p>
+                      </div>
+                    ) : null}
+                  </div>
                 </FieldRow>
                 <FieldRow label={t("settings.labelPovDefaultMode")} hint={t("settings.hintPovDefaultMode")} search={search && !matches(t("settings.labelPovDefaultMode") + " " + t("settings.hintPovDefaultMode"))}>
                   <SelectInput

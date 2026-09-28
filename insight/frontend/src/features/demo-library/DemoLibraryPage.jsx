@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import API from "../../api/api";
 import { LayoutGrid, List } from "lucide-react";
 import PageContainer from "../../components/PageContainer";
@@ -9,6 +9,7 @@ import DemoLibraryToolbar from "./components/DemoLibraryToolbar";
 import DemoWatchPathsModal from "./components/DemoWatchPathsModal";
 import DemoPagination from "./components/DemoPagination";
 import MatchCard, { MatchListRow } from "./components/MatchCard";
+import DemoFolderBar from "./components/DemoFolderBar.jsx";
 import IngestModal from "./components/IngestModal";
 import Modal from "../../components/ui/Modal";
 import Button from "../../components/ui/Button";
@@ -50,8 +51,99 @@ export default function DemoLibraryPage() {
   const [ingestModalOpen, setIngestModalOpen] = useState(false);
   const [batchDeleteCount, setBatchDeleteCount] = useState(0);
   const [openingDemoId, setOpeningDemoId] = useState(null);
+  const [demoFolders, setDemoFolders] = useState([]);
+  const [unfiledDemoCount, setUnfiledDemoCount] = useState(0);
+  const [folderBusy, setFolderBusy] = useState(false);
+  const folderRefreshSeqRef = useRef(0);
   const openingDemoIdRef = useRef(null);
   const { requestPlayDemo, DemoPlaybackUi } = useDemoPlaybackDialog();
+
+  const refreshDemoFolders = useCallback(async () => {
+    const requestId = ++folderRefreshSeqRef.current;
+    try {
+      const { data } = await API.get("/demo-folders");
+      if (requestId !== folderRefreshSeqRef.current) return;
+      setDemoFolders(Array.isArray(data?.items) ? data.items : []);
+      setUnfiledDemoCount(Number(data?.unfiled_count) || 0);
+    } catch (error) {
+      if (requestId === folderRefreshSeqRef.current) {
+        console.error("Load Demo folders failed", error);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshDemoFolders();
+  }, [refreshDemoFolders, s.demoLibraryItems]);
+
+  const handleCreateDemoFolder = useCallback(async (name) => {
+    setFolderBusy(true);
+    try {
+      const { data } = await API.post("/demo-folders", { name });
+      await refreshDemoFolders();
+      s.setProgressText(t("library.folderCreateSuccess", { name: data.name }));
+      return true;
+    } catch (error) {
+      s.setProgressText(t("library.folderOperationFailed", { message: error.response?.data?.detail || error.message }), { isError: true });
+      return false;
+    } finally {
+      setFolderBusy(false);
+    }
+  }, [refreshDemoFolders, s, t]);
+
+  const handleRenameDemoFolder = useCallback(async (folderId, name) => {
+    setFolderBusy(true);
+    try {
+      await API.patch(`/demo-folders/${folderId}`, { name });
+      await refreshDemoFolders();
+      return true;
+    } catch (error) {
+      s.setProgressText(t("library.folderOperationFailed", { message: error.response?.data?.detail || error.message }), { isError: true });
+      return false;
+    } finally {
+      setFolderBusy(false);
+    }
+  }, [refreshDemoFolders, s, t]);
+
+  const handleDeleteDemoFolder = useCallback(async (folderId) => {
+    setFolderBusy(true);
+    try {
+      await API.delete(`/demo-folders/${folderId}`);
+      const nextScope = s.libraryFolderScope === String(folderId) ? "all" : s.libraryFolderScope;
+      if (nextScope !== s.libraryFolderScope) {
+        s.clearLibrarySelection();
+        s.setLibraryFolderScope(nextScope);
+      }
+      await refreshDemoFolders();
+      await s.refreshDemoLibrary(1, { manageLoading: false, folderScope: nextScope });
+      return true;
+    } catch (error) {
+      s.setProgressText(t("library.folderOperationFailed", { message: error.response?.data?.detail || error.message }), { isError: true });
+      return false;
+    } finally {
+      setFolderBusy(false);
+    }
+  }, [refreshDemoFolders, s, t]);
+
+  const handleMoveSelectedToFolder = useCallback(async (target) => {
+    const ids = Array.from(s.selectedLibraryDemoIds);
+    if (!ids.length) return false;
+    setFolderBusy(true);
+    try {
+      const folderId = target === "unfiled" ? null : Number(target);
+      const { data } = await API.put("/demo-folders/assign", { demo_ids: ids, folder_id: folderId });
+      s.clearLibrarySelection();
+      await refreshDemoFolders();
+      await s.refreshDemoLibrary(1, { manageLoading: false });
+      s.setProgressText(t("library.folderMoveSuccess", { count: data?.updated ?? ids.length }));
+      return true;
+    } catch (error) {
+      s.setProgressText(t("library.folderOperationFailed", { message: error.response?.data?.detail || error.message }), { isError: true });
+      return false;
+    } finally {
+      setFolderBusy(false);
+    }
+  }, [refreshDemoFolders, s, t]);
 
   const expectedPlayers = useMemo(() => {
     const raw = s.expectedParsePlayersText || "";
@@ -271,6 +363,24 @@ export default function DemoLibraryPage() {
         onClearSelection={s.clearLibrarySelection}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
+      />
+
+      <DemoFolderBar
+        folders={demoFolders}
+        unfiledCount={unfiledDemoCount}
+        activeScope={s.libraryFolderScope}
+        selectedCount={s.selectedLibraryDemoIds.size}
+        busy={folderBusy}
+        onScopeChange={(scope) => {
+          if (scope !== s.libraryFolderScope) {
+            s.clearLibrarySelection();
+            s.setLibraryFolderScope(scope);
+          }
+        }}
+        onMoveSelected={handleMoveSelectedToFolder}
+        onCreateFolder={handleCreateDemoFolder}
+        onRenameFolder={handleRenameDemoFolder}
+        onDeleteFolder={handleDeleteDemoFolder}
       />
 
       <DemoLibraryQueryBar
