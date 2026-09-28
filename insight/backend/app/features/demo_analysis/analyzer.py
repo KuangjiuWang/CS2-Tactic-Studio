@@ -556,10 +556,11 @@ class DemoAnalyzer:
         equip_df      = _filter_ms(_event_batch["item_equip"])
         pickup_df     = _filter_ms(_event_batch["item_pickup"])
 
-        # player_death (largest event) — player=["X","Y","Z"] 附带攻击者/受害者击杀瞬间坐标
+        # player_death (largest event) — positions and named areas for both roles
         _death_other = list(dict.fromkeys(list(_EXTRA_EVENT_FIELDS) + list(_PLAYER_DEATH_GAME_KEYS)))
         events = _filter_ms(_to_pandas_df(self.parser.parse_event(
-            "player_death", other=_death_other, player=["X", "Y", "Z", "user_id"],
+            "player_death", other=_death_other,
+            player=["X", "Y", "Z", "user_id", "last_place_name"],
         )))
 
         # weapon_fire + player_hurt — 合并为单次 demo 扫描
@@ -1076,9 +1077,11 @@ class DemoAnalyzer:
         _d_atk_x = _death_col("attacker_X")
         _d_atk_y = _death_col("attacker_Y")
         _d_atk_z = _death_col("attacker_Z")
+        _d_atk_place = _death_col("attacker_last_place_name", "")
         _d_vic_x = _death_col("user_X")
         _d_vic_y = _death_col("user_Y")
         _d_vic_z = _death_col("user_Z")
+        _d_vic_place = _death_col("user_last_place_name", "")
 
         for i in range(_death_n):
             _rn   = _int(_d_round[i]) + 1
@@ -1119,9 +1122,11 @@ class DemoAnalyzer:
                 "atk_x": _safe_coord_bucket(_d_atk_x[i]),
                 "atk_y": _safe_coord_bucket(_d_atk_y[i]),
                 "atk_z": _safe_coord_bucket(_d_atk_z[i]),
+                "atk_place": "" if pd.isna(_d_atk_place[i]) else str(_d_atk_place[i]).strip(),
                 "vic_x": _safe_coord_bucket(_d_vic_x[i]),
                 "vic_y": _safe_coord_bucket(_d_vic_y[i]),
                 "vic_z": _safe_coord_bucket(_d_vic_z[i]),
+                "vic_place": "" if pd.isna(_d_vic_place[i]) else str(_d_vic_place[i]).strip(),
             }
             # Friendly fire remains in the victim/death bucket so the existing
             # "痛击队友" fail tag still works, but it must never feed highlight

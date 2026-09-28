@@ -79,7 +79,7 @@ export default {
   "settings.btnUpdate": "立即更新",
   "settings.btnCheckUpdates": "检查更新",
   "settings.btnCheckUpdatesLong": "检查版本更新",
-  "settings.updateDevModeError": "开发模式下不支持检查更新",
+  "settings.updateDevModeError": "请在桌面版中检查更新",
   "settings.updateChecking": "正在检查更新...",
   "settings.cardFfmpeg": "FFmpeg 与合辑",
   "settings.cardFfmpegHint": "合辑导出与编码器选择。",

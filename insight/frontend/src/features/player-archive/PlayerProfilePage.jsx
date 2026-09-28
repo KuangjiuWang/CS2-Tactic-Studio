@@ -49,6 +49,90 @@ function mergeBreakdown(matches, key, side = "all") {
   return [...merged.entries()].map(([label, values]) => ({ label, ...values }));
 }
 
+function aggregateTacticalMatches(matches, side = "all") {
+  const cells = new Map();
+  const sites = new Map();
+  const totals = {
+    availableMatches: 0,
+    duelWins: 0,
+    duelLosses: 0,
+    breakFirstKills: 0,
+    holdFirstKills: 0,
+    break2k: 0,
+    break3k: 0,
+    hold2k: 0,
+    hold3k: 0,
+    siteAreaKills: 0,
+  };
+  for (const match of matches) {
+    const tactical = match.tactical_metrics;
+    if (!tactical?.available) continue;
+    totals.availableMatches += 1;
+    for (const row of tactical.duel_cells || []) {
+      if (side !== "all" && row.side !== side) continue;
+      const ownArea = String(row.own_area || "未知区域");
+      const enemyArea = String(row.enemy_area || "未知区域");
+      const key = `${ownArea}\u0000${enemyArea}`;
+      const target = cells.get(key) || { ownArea, enemyArea, wins: 0, losses: 0 };
+      target.wins += Number(row.wins || 0);
+      target.losses += Number(row.losses || 0);
+      cells.set(key, target);
+    }
+    const includeBreak = side === "all" || side === "T";
+    const includeHold = side === "all" || side === "CT";
+    if (includeBreak) {
+      totals.breakFirstKills += Number(tactical.site_break_first_kills || 0);
+      totals.break2k += Number(tactical.site_break_2k || 0);
+      totals.break3k += Number(tactical.site_break_3k || 0);
+    }
+    if (includeHold) {
+      totals.holdFirstKills += Number(tactical.site_hold_first_kills || 0);
+      totals.hold2k += Number(tactical.site_hold_2k || 0);
+      totals.hold3k += Number(tactical.site_hold_3k || 0);
+    }
+    totals.siteAreaKills += Number(tactical.site_area_kills || 0);
+    for (const row of tactical.site_breakdown || []) {
+      const site = String(row.site || "?");
+      const target = sites.get(site) || {
+        site, breakFirstKills: 0, holdFirstKills: 0,
+        break2k: 0, break3k: 0, hold2k: 0, hold3k: 0,
+      };
+      if (includeBreak) {
+        target.breakFirstKills += Number(row.break_first_kills || 0);
+        target.break2k += Number(row.break_2k || 0);
+        target.break3k += Number(row.break_3k || 0);
+      }
+      if (includeHold) {
+        target.holdFirstKills += Number(row.hold_first_kills || 0);
+        target.hold2k += Number(row.hold_2k || 0);
+        target.hold3k += Number(row.hold_3k || 0);
+      }
+      sites.set(site, target);
+    }
+  }
+
+  const cellRows = [...cells.values()];
+  const areaTotals = (field) => {
+    const totalsByArea = new Map();
+    cellRows.forEach((row) => {
+      const area = row[field];
+      totalsByArea.set(area, (totalsByArea.get(area) || 0) + row.wins + row.losses);
+    });
+    return [...totalsByArea.entries()].sort((left, right) => right[1] - left[1]).slice(0, 8).map(([area]) => area);
+  };
+  return {
+    ...totals,
+    duelAttempts: totals.duelWins + totals.duelLosses,
+    duelWinRate: totals.duelWins + totals.duelLosses
+      ? totals.duelWins / (totals.duelWins + totals.duelLosses) * 100
+      : null,
+    ownAreas: areaTotals("ownArea"),
+    enemyAreas: areaTotals("enemyArea"),
+    cells: cellRows,
+    sites: [...sites.values()].sort((left, right) => left.site.localeCompare(right.site)),
+  };
+}
+
 function StatCard({ icon: Icon, label, value, detail, tone = "" }) {
   return <article className={`player-profile__stat ${tone}`}><div><span>{label}</span>{Icon && <Icon size={15} />}</div><strong>{value}</strong>{detail && <small>{detail}</small>}</article>;
 }
@@ -190,12 +274,15 @@ export default function PlayerProfilePage() {
       format: "cs2-player-archive", version: 3, exported_at: new Date().toISOString(),
       player: { player_key: profile.player_key, display_name: profile.display_name, steam_id64: profile.steam_id64 || null, aliases: profile.aliases || [], groups: profile.groups || [] },
       filters: { map_name: mapName || null, side, match_limit: matchLimit },
-      summary: metrics,
+      summary: { ...metrics, tactical },
       matches: scopedMatches.map((match) => {
         const analysis = profile.analysis_matches?.find((row) => String(row.demo_id) === String(match.demo_id));
         const source = analysis?.metrics || null;
         const aggregate = source ? aggregateMatches([{ ...analysis, available: true }], side) : null;
         const stats = aggregate?.matches ? aggregate : null;
+        const tacticalStats = analysis?.tactical_metrics
+          ? aggregateTacticalMatches([{ ...analysis, tactical_metrics: analysis.tactical_metrics }], side)
+          : null;
         return {
           demo_id: match.demo_id,
           map_name: match.map_name,
@@ -213,6 +300,7 @@ export default function PlayerProfilePage() {
             utility_damage: stats.utilityDamage, utility_damage_per_round: stats.utilityDamagePerRound,
             rating_approx: stats.ratingApprox,
           } : null,
+          tactical_stats: tacticalStats,
         };
       }),
     };
@@ -261,11 +349,18 @@ export default function PlayerProfilePage() {
   const economyRows = useMemo(() => mergeBreakdown(analysisMatches, "economy_breakdown", side).sort((left, right) => right.rounds - left.rounds), [analysisMatches, side]);
   const utilityRows = useMemo(() => mergeBreakdown(analysisMatches, "utility_breakdown", side).sort((left, right) => right.throws - left.throws), [analysisMatches, side]);
   const clutchRows = useMemo(() => mergeBreakdown(analysisMatches, "clutch_breakdown", side).sort((left, right) => Number(left.label.slice(2)) - Number(right.label.slice(2))), [analysisMatches, side]);
+  const tactical = useMemo(() => (
+    mapName ? aggregateTacticalMatches(analysisMatches, side) : aggregateTacticalMatches([], side)
+  ), [analysisMatches, mapName, side]);
+  const tacticalCellMap = useMemo(() => new Map(
+    tactical.cells.map((row) => [`${row.ownArea}\u0000${row.enemyArea}`, row]),
+  ), [tactical.cells]);
 
   const tabs = [
     ["overview", t("playerArchive.overview"), Activity],
     ["maps", t("playerArchive.mapSideAnalysis"), MapIcon],
     ["weapons", t("playerArchive.weaponsEconomy"), Swords],
+    ["tactics", t("playerArchive.tacticalAnalysis"), Crosshair],
     ["matches", t("playerArchive.matches"), Trophy],
     ["spatial", t("playerArchive.spatialAnalysis"), Crosshair],
   ];
@@ -384,6 +479,34 @@ export default function PlayerProfilePage() {
           </section>
           <section className="player-profile__panel"><header><strong>{t("playerArchive.utilityUsage")}</strong><small>{number(metrics.utilityDamage)} {t("playerArchive.damage")}</small></header>
             <div className="player-profile__utility-list">{utilityRows.map((row) => <div key={row.label}><span>{row.label}</span><strong>{number(row.throws)}</strong><small>{t("playerArchive.throws")}</small></div>)}{!utilityRows.length && <div className="player-profile__empty">{t("playerArchive.noAnalyzedMatches")}</div>}</div>
+          </section>
+        </div>}
+
+        {activeTab === "tactics" && <div className="player-profile__analysis-grid">
+          <section className="player-profile__panel player-profile__panel--wide"><header><strong>{t("playerArchive.duelMatrix")}</strong><small>{mapName ? t("playerArchive.tacticalMapScope", { map: mapName }) : t("playerArchive.tacticalSelectMap")}</small></header>
+            <p className="player-profile__method-note">{t("playerArchive.duelMatrixNote", { matches: number(tactical.availableMatches) })}</p>
+            {!mapName ? <div className="player-profile__empty">{t("playerArchive.tacticalSelectMap")}</div>
+              : !tactical.availableMatches ? <div className="player-profile__empty">{t("playerArchive.tacticalNeedsReanalysis")}</div>
+              : tactical.duelAttempts ? <div className="player-profile__table-scroll player-profile__tactical-matrix-scroll"><table className="player-profile__tactical-matrix"><thead><tr><th>{t("playerArchive.enemyPosition")}↓ / {t("playerArchive.ownPosition")}→</th>{tactical.ownAreas.map((area) => <th key={area}>{area}</th>)}</tr></thead><tbody>{tactical.enemyAreas.map((enemyArea) => <tr key={enemyArea}><th>{enemyArea}</th>{tactical.ownAreas.map((ownArea) => {
+                const row = tacticalCellMap.get(`${ownArea}\u0000${enemyArea}`);
+                const attempts = Number(row?.wins || 0) + Number(row?.losses || 0);
+                const rate = attempts ? Number(row.wins) / attempts * 100 : null;
+                return <td key={ownArea} className={attempts ? "has-sample" : ""} style={rate == null ? undefined : { "--duel-rate": `${Math.round(rate)}%` }} title={attempts ? `${number(row.wins)} W / ${number(row.losses)} L` : ""}>
+                  {attempts ? <><strong>{number(rate)}%</strong><small>{number(row.wins)} / {number(row.losses)}</small></> : "—"}
+                </td>;
+              })}</tr>)}</tbody></table></div>
+              : <div className="player-profile__empty">{t("playerArchive.noDuelSamples")}</div>}
+          </section>
+
+          <div className="player-profile__stat-grid player-profile__tactical-stats">
+            <StatCard icon={Swords} label={t("playerArchive.duelWinRate")} value={<RateText value={tactical.duelWinRate} />} detail={t("playerArchive.duelRecord", { wins: number(tactical.duelWins), losses: number(tactical.duelLosses), attempts: number(tactical.duelAttempts) })} tone="is-accent" />
+            <StatCard icon={Target} label={t("playerArchive.breakSiteFirstKills")} value={number(tactical.breakFirstKills)} detail={t("playerArchive.breakSiteMultiKills", { two: number(tactical.break2k), three: number(tactical.break3k) })} />
+            <StatCard icon={ShieldCheck} label={t("playerArchive.holdSiteFirstKills")} value={number(tactical.holdFirstKills)} detail={t("playerArchive.holdSiteMultiKills", { two: number(tactical.hold2k), three: number(tactical.hold3k) })} />
+            <StatCard icon={MapIcon} label={t("playerArchive.recognizedSiteKills")} value={number(tactical.siteAreaKills)} detail={t("playerArchive.siteAreaKillNote")} />
+          </div>
+
+          <section className="player-profile__panel player-profile__panel--wide"><header><strong>{t("playerArchive.siteEntryBreakdown")}</strong><small>{t("playerArchive.siteEntryScope")}</small></header>
+            <div className="player-profile__table-scroll"><table><thead><tr><th>{t("playerArchive.site")}</th><th>{t("playerArchive.breakSiteFirstKills")}</th><th>{t("playerArchive.siteMultiKillHeader")}</th><th>{t("playerArchive.holdSiteFirstKills")}</th><th>{t("playerArchive.siteMultiKillHeader")}</th></tr></thead><tbody>{tactical.sites.map((row) => <tr key={row.site}><td>{row.site}</td><td>{number(row.breakFirstKills)}</td><td>{number(row.break2k)} / {number(row.break3k)}</td><td>{number(row.holdFirstKills)}</td><td>{number(row.hold2k)} / {number(row.hold3k)}</td></tr>)}{!tactical.sites.length && <tr><td colSpan="5">{t(mapName ? "playerArchive.noSiteSamples" : "playerArchive.tacticalSelectMap")}</td></tr>}</tbody></table></div>
           </section>
         </div>}
 

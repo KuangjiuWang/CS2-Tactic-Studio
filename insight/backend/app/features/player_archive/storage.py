@@ -48,6 +48,26 @@ async def initialize_player_archive(db_path: Path) -> None:
             "CREATE INDEX IF NOT EXISTS idx_player_archive_memberships_group "
             "ON player_archive_memberships(group_id, player_key)"
         )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS player_archive_settings (
+                player_key TEXT PRIMARY KEY,
+                imported INTEGER NOT NULL DEFAULT 0 CHECK(imported IN (0, 1)),
+                blocked INTEGER NOT NULL DEFAULT 0 CHECK(blocked IN (0, 1)),
+                pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0, 1)),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        # A category assignment was an explicit user action in the old archive,
+        # so preserve those profiles as imported during the behavior change.
+        await conn.execute(
+            """
+            INSERT OR IGNORE INTO player_archive_settings(player_key, imported)
+            SELECT DISTINCT player_key, 1 FROM player_archive_memberships
+            """
+        )
         await conn.commit()
 
 
@@ -661,6 +681,141 @@ def _event_position(event: dict[str, Any], role: str) -> dict[str, float] | None
     return None
 
 
+def _player_tactical_metrics(
+    workspace: dict[str, Any],
+    match_player: dict[str, Any],
+    roster_row: dict[str, Any],
+) -> dict[str, Any]:
+    player_names = {
+        str(value).strip().casefold()
+        for value in (
+            match_player.get("name"), match_player.get("display_name"),
+            roster_row.get("player_name"), roster_row.get("normalized_name"),
+        )
+        if str(value or "").strip()
+    }
+    player_steam_id = str(
+        match_player.get("steam_id64") or match_player.get("steamid64")
+        or roster_row.get("steam_id64") or ""
+    ).strip()
+
+    def is_player(name: object, steam_id: object = None) -> bool:
+        candidate_id = str(steam_id or "").strip()
+        if player_steam_id and candidate_id:
+            return candidate_id == player_steam_id
+        return str(name or "").strip().casefold() in player_names
+
+    empty = {
+        "available": False,
+        "duel_cells": [],
+        "duel_wins": 0,
+        "duel_losses": 0,
+        "site_break_first_kills": 0,
+        "site_hold_first_kills": 0,
+        "site_break_2k": 0,
+        "site_break_3k": 0,
+        "site_hold_2k": 0,
+        "site_hold_3k": 0,
+        "site_area_kills": 0,
+        "site_breakdown": [],
+    }
+    if int(workspace.get("tactical_metrics_version") or 0) < 1:
+        return empty
+
+    cells: dict[tuple[str, str, str], dict[str, int]] = {}
+    duel_wins = 0
+    duel_losses = 0
+    for row in workspace.get("duel_engagements") or []:
+        if not isinstance(row, dict) or not is_player(row.get("player"), row.get("player_steam_id64")):
+            continue
+        side = str(row.get("side") or "unknown").upper()
+        own_area = str(row.get("own_area") or "未知区域").strip()
+        enemy_area = str(row.get("enemy_area") or "未知区域").strip()
+        cell = cells.setdefault((side, own_area, enemy_area), {"wins": 0, "losses": 0})
+        if row.get("result") == "win":
+            cell["wins"] += 1
+            duel_wins += 1
+        elif row.get("result") == "loss":
+            cell["losses"] += 1
+            duel_losses += 1
+
+    kills_by_site: dict[tuple[int, str, str, str], list[dict[str, Any]]] = {}
+    first_kills: dict[tuple[int, str, str], dict[str, Any]] = {}
+    for round_row in workspace.get("rounds") or []:
+        if not isinstance(round_row, dict):
+            continue
+        round_number = _safe_int(round_row.get("round_number"))
+        for event in round_row.get("events") or []:
+            if not isinstance(event, dict) or event.get("type") != "kill":
+                continue
+            site = str(event.get("tactical_site") or "").upper()
+            role = str(event.get("tactical_role") or "").lower()
+            if site not in {"A", "B"} or role not in {"break", "hold"}:
+                continue
+            site_key = (round_number, site, role)
+            if site_key not in first_kills or _safe_int(event.get("tick")) < _safe_int(first_kills[site_key].get("tick")):
+                first_kills[site_key] = event
+            if is_player(event.get("actor"), event.get("actor_steamid")):
+                kills_by_site.setdefault((*site_key, str(event.get("actor") or "").casefold()), []).append(event)
+
+    counters = dict(empty)
+    counters["available"] = True
+    counters["duel_wins"] = duel_wins
+    counters["duel_losses"] = duel_losses
+    counters["duel_cells"] = [
+        {
+            "side": side,
+            "own_area": own_area,
+            "enemy_area": enemy_area,
+            "wins": values["wins"],
+            "losses": values["losses"],
+        }
+        for (side, own_area, enemy_area), values in sorted(cells.items())
+    ]
+    site_breakdown: dict[str, dict[str, Any]] = {}
+
+    def site_row(site: str) -> dict[str, Any]:
+        return site_breakdown.setdefault(site, {
+            "site": site,
+            "break_first_kills": 0,
+            "hold_first_kills": 0,
+            "break_2k": 0,
+            "break_3k": 0,
+            "hold_2k": 0,
+            "hold_3k": 0,
+        })
+
+    for (round_number, _site, role), event in first_kills.items():
+        if is_player(event.get("actor"), event.get("actor_steamid")):
+            field = "site_break_first_kills" if role == "break" else "site_hold_first_kills"
+            counters[field] += 1
+            site_row(_site)[f"{role}_first_kills"] += 1
+    for (round_number, site, role, _player_name), events in kills_by_site.items():
+        events.sort(key=lambda event: _safe_int(event.get("tick")))
+        tick_rate = max(1.0, _safe_float(workspace.get("tick_rate"), 64.0))
+        max_gap = int(round(tick_rate * 10.0))
+        cluster: list[dict[str, Any]] = []
+        for event in events:
+            if cluster and _safe_int(event.get("tick")) - _safe_int(cluster[-1].get("tick")) > max_gap:
+                if len(cluster) >= 2:
+                    counters[f"site_{role}_2k"] += 1
+                    site_row(site)[f"{role}_2k"] += 1
+                if len(cluster) >= 3:
+                    counters[f"site_{role}_3k"] += 1
+                    site_row(site)[f"{role}_3k"] += 1
+                cluster = []
+            cluster.append(event)
+        if len(cluster) >= 2:
+            counters[f"site_{role}_2k"] += 1
+            site_row(site)[f"{role}_2k"] += 1
+        if len(cluster) >= 3:
+            counters[f"site_{role}_3k"] += 1
+            site_row(site)[f"{role}_3k"] += 1
+    counters["site_area_kills"] = sum(len(events) for events in kills_by_site.values())
+    counters["site_breakdown"] = [site_breakdown[key] for key in sorted(site_breakdown)]
+    return counters
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -914,6 +1069,10 @@ async def _load_analysis_matches(
             "match_date": source.get("match_date") or source.get("added_at"),
             "workspace_player_key": str((match_player or {}).get("player_key") or ""),
             "metrics": metrics,
+            "tactical_metrics": (
+                _player_tactical_metrics(workspace, match_player, source)
+                if match_player and workspace else {"available": False}
+            ),
         })
     return enriched
 
@@ -958,43 +1117,69 @@ async def _load_memberships(db_path: Path) -> dict[str, list[str]]:
         return result
 
 
-async def _folder_counts(db_path: Path) -> dict[str, int]:
-    identity = _identity_sql("ps")
+async def _load_player_settings(db_path: Path) -> dict[str, dict[str, bool]]:
     async with aiosqlite.connect(db_path) as conn:
         cursor = await conn.execute(
-            f"""
-            SELECT COUNT(DISTINCT ({identity}))
-            FROM demo_player_stats ps JOIN demo_files d ON d.id = ps.demo_id
-            WHERE TRIM(COALESCE(ps.player_name, '')) <> ''
-            """
+            "SELECT player_key, imported, blocked, pinned FROM player_archive_settings"
         )
-        all_count = int((await cursor.fetchone())[0] or 0)
-        cursor = await conn.execute(
-            f"""
-            SELECT m.group_id, COUNT(DISTINCT m.player_key)
-            FROM player_archive_memberships m
-            WHERE m.player_key IN (
-                SELECT DISTINCT ({identity})
-                FROM demo_player_stats ps JOIN demo_files d ON d.id = ps.demo_id
-                WHERE TRIM(COALESCE(ps.player_name, '')) <> ''
-            )
-            GROUP BY m.group_id
-            """
-        )
-        counts = {str(group): int(count) for group, count in await cursor.fetchall()}
-    return {"all": all_count, **{group: counts.get(group, 0) for group in PLAYER_GROUPS}}
+        return {
+            str(player_key): {
+                "imported": bool(imported),
+                "blocked": bool(blocked),
+                "pinned": bool(pinned),
+            }
+            for player_key, imported, blocked, pinned in await cursor.fetchall()
+        }
+
+
+async def _folder_counts(db_path: Path) -> dict[str, int]:
+    players = await _load_roster_rows(db_path)
+    keys = {str(row["player_key"]) for row in players}
+    settings = await _load_player_settings(db_path)
+    memberships = await _load_memberships(db_path)
+    counts = {"all": 0, "candidates": 0, "blocked": 0, **{group: 0 for group in PLAYER_GROUPS}}
+    for player_key in keys:
+        state = settings.get(player_key, {})
+        if state.get("blocked"):
+            counts["blocked"] += 1
+        elif state.get("imported"):
+            counts["all"] += 1
+            for group in memberships.get(player_key, []):
+                counts[group] += 1
+        else:
+            counts["candidates"] += 1
+    return counts
 
 
 async def list_player_profiles(
     db_path: Path,
     *,
     group_id: str = "all",
+    view: str = "all",
     query: str = "",
     map_name: str = "",
 ) -> dict[str, Any]:
-    rows = _deduplicate_matches(await _load_roster_rows(db_path, group_id, map_name))
+    rows = _deduplicate_matches(await _load_roster_rows(db_path, map_name=map_name))
     memberships = await _load_memberships(db_path)
+    settings = await _load_player_settings(db_path)
     players = _aggregate(rows, memberships)
+    for player in players:
+        state = settings.get(player["player_key"], {})
+        player.update({
+            "imported": state.get("imported", False),
+            "blocked": state.get("blocked", False),
+            "pinned": state.get("pinned", False),
+        })
+    if view == "archive":
+        players = [player for player in players if player["imported"] and not player["blocked"]]
+    elif view == "candidates":
+        players = [player for player in players if not player["imported"] and not player["blocked"]]
+    elif view == "blocked":
+        players = [player for player in players if player["blocked"]]
+    elif view != "all":
+        raise ValueError("Unknown player archive view")
+    if group_id != "all":
+        players = [player for player in players if group_id in player["groups"]]
     search = query.strip().casefold()
     if search:
         players = [player for player in players if (
@@ -1002,6 +1187,12 @@ async def list_player_profiles(
             or search in str(player.get("steam_id64") or "").casefold()
             or any(search in alias.casefold() for alias in player["aliases"])
         )]
+    players.sort(key=lambda player: (
+        not bool(player.get("pinned")),
+        -int(player.get("demo_count") or 0),
+        str(player.get("display_name") or "").casefold(),
+        player["player_key"],
+    ))
     return {
         "players": [{key: value for key, value in player.items() if key != "matches"} for player in players],
         "groups": list(PLAYER_GROUPS),
@@ -1017,10 +1208,12 @@ async def get_player_profile(db_path: Path, player_key: str) -> dict[str, Any] |
     if not selected:
         return None
     memberships = await _load_memberships(db_path)
+    settings = await _load_player_settings(db_path)
     players = _aggregate(selected, memberships)
     if not players:
         return None
     profile = players[0]
+    profile.update(settings.get(player_key, {"imported": False, "blocked": False, "pinned": False}))
     analysis_matches = await _load_analysis_matches(db_path, player_key, selected)
     profile["analysis_matches"] = analysis_matches
     profile["analysis_summary"] = _summarize_analysis(analysis_matches)
@@ -1129,5 +1322,84 @@ async def set_player_groups(db_path: Path, player_key: str, group_ids: list[str]
                 "INSERT INTO player_archive_memberships(player_key, group_id) VALUES (?, ?)",
                 [(player_key, group) for group in dict.fromkeys(group_ids)],
             )
+        await conn.execute(
+            """
+            INSERT INTO player_archive_settings(player_key, imported, blocked)
+            VALUES (?, 1, 0)
+            ON CONFLICT(player_key) DO UPDATE SET imported = 1, blocked = 0,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (player_key,),
+        )
+        await conn.commit()
+    return True
+
+
+async def set_player_imported(db_path: Path, player_key: str, imported: bool) -> bool:
+    identity = _identity_sql("ps")
+    async with aiosqlite.connect(db_path) as conn:
+        cursor = await conn.execute(
+            f"""
+            SELECT 1 FROM demo_player_stats ps JOIN demo_files d ON d.id = ps.demo_id
+            WHERE ({identity}) = ? LIMIT 1
+            """,
+            (player_key,),
+        )
+        if not await cursor.fetchone():
+            return False
+        await conn.execute(
+            """
+            INSERT INTO player_archive_settings(player_key, imported, blocked)
+            VALUES (?, ?, 0)
+            ON CONFLICT(player_key) DO UPDATE SET imported = excluded.imported,
+                blocked = CASE WHEN excluded.imported = 1 THEN 0 ELSE player_archive_settings.blocked END,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (player_key, int(imported)),
+        )
+        await conn.commit()
+    return True
+
+
+async def set_player_blocked(db_path: Path, player_key: str, blocked: bool) -> bool:
+    identity = _identity_sql("ps")
+    async with aiosqlite.connect(db_path) as conn:
+        cursor = await conn.execute(
+            f"""
+            SELECT 1 FROM demo_player_stats ps JOIN demo_files d ON d.id = ps.demo_id
+            WHERE ({identity}) = ? LIMIT 1
+            """,
+            (player_key,),
+        )
+        if not await cursor.fetchone():
+            return False
+        await conn.execute(
+            """
+            INSERT INTO player_archive_settings(player_key, imported, blocked)
+            VALUES (?, 0, ?)
+            ON CONFLICT(player_key) DO UPDATE SET
+                imported = CASE WHEN excluded.blocked = 1 THEN 0 ELSE player_archive_settings.imported END,
+                blocked = excluded.blocked,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (player_key, int(blocked)),
+        )
+        await conn.commit()
+    return True
+
+
+async def set_player_pinned(db_path: Path, player_key: str, pinned: bool) -> bool:
+    async with aiosqlite.connect(db_path) as conn:
+        cursor = await conn.execute(
+            "SELECT imported, blocked FROM player_archive_settings WHERE player_key = ?",
+            (player_key,),
+        )
+        state = await cursor.fetchone()
+        if not state or not bool(state[0]) or bool(state[1]):
+            return False
+        await conn.execute(
+            "UPDATE player_archive_settings SET pinned = ?, updated_at = CURRENT_TIMESTAMP WHERE player_key = ?",
+            (int(pinned), player_key),
+        )
         await conn.commit()
     return True

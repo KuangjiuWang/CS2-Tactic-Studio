@@ -1073,7 +1073,7 @@ export default function App() {
       const manual = Boolean(opts.manual);
       const awaitDismiss = Boolean(opts.awaitDismiss);
 
-      if (!(await shouldCheckAppUpdates())) {
+      if (!(await shouldCheckAppUpdates({ manual }))) {
         if (manual) {
           setUpdateInfo({
             status: "error",

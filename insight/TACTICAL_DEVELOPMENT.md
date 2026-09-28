@@ -9,9 +9,10 @@ license review or permission from the author.
 From the repository root, `powershell -File .\launch-tactic-studio.ps1` starts
 the backend and browser UI; Ctrl+C stops both child processes. The tactical
 page is `/tactics`. For a packaged desktop app, the upstream packaging stages
-an embedded Python runtime and builds the Tauri shell. The derivative disables
-the upstream updater and its installer migration hook, and uses a separate
-product identifier and data directory.
+an embedded Python runtime and builds the Tauri shell. Packaged builds check this
+product's GitHub Releases feed automatically. Tauri development builds can check
+manually and open the release page; browser-only sessions skip update checks. The
+app uses a separate product identifier and data directory.
 
 Current tactical path: parse a demo in Demo Analysis, open Tactical Playbook,
 choose a round and side, then generate five jobs through the original CS2/OBS

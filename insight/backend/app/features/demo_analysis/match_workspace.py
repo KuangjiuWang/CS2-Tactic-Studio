@@ -8,6 +8,7 @@ import math
 from ... import native_table as pd
 
 from .parse_utils import _bool, _int, _round_end_winner_team_num, _to_pandas_df
+from .site_areas import site_for_area
 from .weapons import _normalize_item
 
 
@@ -37,9 +38,8 @@ _NON_BULLET_WEAPONS = {
 }
 _KILL_NUMERALS = {2: "双", 3: "三", 4: "四", 5: "五"}
 
-# Bump this together with DEMO_ANALYSIS_WORKSPACE_ALGORITHM_VERSION so cached
-# analysis results are rebuilt (keyboard carrier probe, clip/workspace changes).
-MATCH_WORKSPACE_ALGORITHM_VERSION = "match-workspace-2026.09.19-keyboard-input-v2"
+# Bump whenever the saved analysis workspace schema or derived metrics change.
+MATCH_WORKSPACE_ALGORITHM_VERSION = "match-workspace-2026.09.28-player-tactics-v1"
 
 
 def _clean_name(value: object) -> str:
@@ -75,6 +75,276 @@ def _round_number_for_tick(tick: int, windows: list[dict[str, Any]], row: Option
         if _int(window.get("start_tick")) <= int(tick) <= _int(window.get("end_tick")):
             return _int(window.get("round_number"))
     return _round_number_for_active_event(row) if row is not None and not windows else 0
+
+
+def _side_name(value: object) -> Optional[str]:
+    text = _clean_name(value).strip().upper()
+    if text in {"T", "CT"}:
+        return text
+    try:
+        team_num = int(float(text))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return "T" if team_num == 2 else "CT" if team_num == 3 else None
+
+
+def _round_team_sides(
+    round_number: int,
+    group_side_by_round: dict[int, dict[int, int]],
+    team_a_group: Optional[int],
+    team_b_group: Optional[int],
+) -> dict[str, Optional[str]]:
+    group_sides = group_side_by_round.get(round_number) or {}
+    if group_sides:
+        side_a = group_sides.get(team_a_group) if team_a_group is not None else 2
+        side_b = group_sides.get(team_b_group) if team_b_group is not None else 3
+    else:
+        side_a = 2 if round_number <= 12 else 3
+        side_b = 3 if round_number <= 12 else 2
+    return {"a": _side_name(side_a), "b": _side_name(side_b)}
+
+
+def _event_player_position(row: Any, prefixes: tuple[str, ...]) -> Optional[dict[str, float]]:
+    for prefix in prefixes:
+        x = _float(row.get(f"{prefix}_X", row.get(f"{prefix}_x")), float("nan"))
+        y = _float(row.get(f"{prefix}_Y", row.get(f"{prefix}_y")), float("nan"))
+        z = _float(row.get(f"{prefix}_Z", row.get(f"{prefix}_z")), float("nan"))
+        if math.isfinite(x) and math.isfinite(y):
+            result = {"x": round(x, 2), "y": round(y, 2)}
+            if math.isfinite(z):
+                result["z"] = round(z, 2)
+            return result
+    return None
+
+
+def _event_player_place(row: Any, prefixes: tuple[str, ...]) -> str:
+    for prefix in prefixes:
+        place = _clean_name(
+            row.get(f"{prefix}_last_place_name")
+            or row.get(f"{prefix}_place_name")
+        )
+        if place:
+            return place
+    return ""
+
+
+def _player_identity_key(steam_id: str, name: str) -> str:
+    return f"steamid:{steam_id}" if steam_id else f"name:{name.casefold()}"
+
+
+def _build_duel_engagements(
+    *,
+    hurt_df: pd.DataFrame,
+    events_by_round: dict[int, list[dict[str, Any]]],
+    player_team: dict[str, str],
+    round_team_sides: dict[int, dict[str, Optional[str]]],
+    windows: list[dict[str, Any]],
+    tick_rate: float,
+) -> list[dict[str, Any]]:
+    """Store conservative, damage-started 1v1s that end with a direct kill."""
+    if hurt_df is None or hurt_df.empty:
+        return []
+
+    idle_gap = max(1, int(round(max(1.0, float(tick_rate or 64.0)) * 4.0)))
+    hits_by_round: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    work = hurt_df.sort_values("tick", kind="mergesort") if "tick" in hurt_df.columns else hurt_df
+    for _, row in work.iterrows():
+        tick = _int(row.get("tick"))
+        attacker = _clean_name(row.get("attacker_name"))
+        victim = _clean_name(row.get("user_name") or row.get("player_name"))
+        if tick <= 0 or not attacker or not victim or attacker.casefold() == victim.casefold():
+            continue
+        round_number = _round_number_for_tick(tick, windows, row)
+        if round_number <= 0:
+            continue
+        attacker_team = player_team.get(attacker.casefold())
+        victim_team = player_team.get(victim.casefold())
+        attacker_side = (
+            _side_name(row.get("attackerteam"))
+            or _side_name(row.get("attacker_team_num"))
+            or round_team_sides.get(round_number, {}).get(attacker_team or "")
+        )
+        victim_side = (
+            _side_name(row.get("userteam"))
+            or _side_name(row.get("user_team_num"))
+            or round_team_sides.get(round_number, {}).get(victim_team or "")
+        )
+        if attacker_team and victim_team and attacker_team == victim_team:
+            continue
+        if attacker_side and victim_side and attacker_side == victim_side:
+            continue
+        if attacker_side not in {"T", "CT"} or victim_side not in {"T", "CT"}:
+            continue
+        attacker_steam_id = _clean_name(row.get("attacker_steamid") or row.get("attacker_steam_id"))
+        victim_steam_id = _clean_name(row.get("user_steamid") or row.get("user_steam_id"))
+        attacker_ref = {
+            "key": _player_identity_key(attacker_steam_id, attacker),
+            "name": attacker,
+            "steam_id64": attacker_steam_id,
+            "side": attacker_side,
+            "place": _event_player_place(row, ("attacker",)),
+            "position": _event_player_position(row, ("attacker",)),
+        }
+        victim_ref = {
+            "key": _player_identity_key(victim_steam_id, victim),
+            "name": victim,
+            "steam_id64": victim_steam_id,
+            "side": victim_side,
+            "place": _event_player_place(row, ("user", "player", "victim")),
+            "position": _event_player_position(row, ("user", "player", "victim")),
+        }
+        pair = tuple(sorted((attacker_ref["key"], victim_ref["key"])))
+        hits_by_round[round_number].append({
+            "kind": "hurt",
+            "tick": tick,
+            "pair": pair,
+            "attacker": attacker_ref,
+            "victim": victim_ref,
+        })
+
+    output: list[dict[str, Any]] = []
+    for round_number, hits in hits_by_round.items():
+        timeline = list(hits)
+        for event in events_by_round.get(round_number, []):
+            if event.get("type") != "kill":
+                continue
+            actor = _clean_name(event.get("actor"))
+            target = _clean_name(event.get("target"))
+            if not actor or not target:
+                continue
+            actor_steam_id = _clean_name(event.get("actor_steamid"))
+            target_steam_id = _clean_name(event.get("target_steamid"))
+            timeline.append({
+                "kind": "kill",
+                "tick": _int(event.get("tick")),
+                "actor_key": _player_identity_key(actor_steam_id, actor),
+                "target_key": _player_identity_key(target_steam_id, target),
+            })
+        timeline.sort(key=lambda event: (_int(event.get("tick")), 0 if event["kind"] == "hurt" else 1))
+
+        active: dict[tuple[str, str], dict[str, Any]] = {}
+
+        def save_resolved(episode: dict[str, Any], winner_key: str, end_tick: int) -> None:
+            if episode.get("multi_player"):
+                return
+            participants = episode["participants"]
+            for player_key in episode["pair"]:
+                player = participants[player_key]
+                opponent = participants[episode["pair"][0] if episode["pair"][1] == player_key else episode["pair"][1]]
+                output.append({
+                    "round_number": int(round_number),
+                    "tick": int(episode["start_tick"]),
+                    "end_tick": int(end_tick),
+                    "player": player["name"],
+                    "player_steam_id64": player["steam_id64"],
+                    "opponent": opponent["name"],
+                    "opponent_steam_id64": opponent["steam_id64"],
+                    "side": player["side"],
+                    "own_area": player["place"] or "未知区域",
+                    "enemy_area": opponent["place"] or "未知区域",
+                    "own_position": player["position"],
+                    "enemy_position": opponent["position"],
+                    "result": "win" if winner_key == player_key else "loss",
+                })
+
+        for event in timeline:
+            tick = _int(event.get("tick"))
+            for pair, episode in list(active.items()):
+                if tick - int(episode["last_hit_tick"]) > idle_gap:
+                    active.pop(pair, None)
+
+            if event["kind"] == "hurt":
+                pair = event["pair"]
+                for other_pair, episode in active.items():
+                    if other_pair == pair:
+                        continue
+                    if set(other_pair).intersection(pair):
+                        episode["multi_player"] = True
+
+                episode = active.get(pair)
+                if episode is None:
+                    attacker = event["attacker"]
+                    victim = event["victim"]
+                    episode = {
+                        "pair": pair,
+                        "participants": {
+                            attacker["key"]: attacker,
+                            victim["key"]: victim,
+                        },
+                        "start_tick": tick,
+                        "last_hit_tick": tick,
+                        "multi_player": False,
+                    }
+                    active[pair] = episode
+                else:
+                    episode["last_hit_tick"] = tick
+                continue
+
+            actor_key = event["actor_key"]
+            target_key = event["target_key"]
+            for pair, episode in list(active.items()):
+                pair_members = set(pair)
+                actor_in = actor_key in pair_members
+                target_in = target_key in pair_members
+                if target_in:
+                    if actor_in and actor_key != target_key:
+                        save_resolved(episode, actor_key, tick)
+                    else:
+                        episode["multi_player"] = True
+                    active.pop(pair, None)
+                elif actor_in:
+                    episode["multi_player"] = True
+
+    output.sort(key=lambda row: (row["round_number"], row["tick"], row["player"].casefold()))
+    return output
+
+
+def _annotate_tactical_kills(
+    events_by_round: dict[int, list[dict[str, Any]]],
+    *,
+    map_name: str,
+    player_team: dict[str, str],
+    round_team_sides: dict[int, dict[str, Optional[str]]],
+) -> None:
+    for round_number, events in events_by_round.items():
+        team_sides = round_team_sides.get(round_number, {})
+        plant_event = next((event for event in events if event.get("type") == "plant"), None)
+        plant_tick = _int((plant_event or {}).get("tick"))
+        planted_site = _clean_name((plant_event or {}).get("site")).upper()
+        for event in events:
+            if event.get("type") != "kill":
+                continue
+            if plant_tick and _int(event.get("tick")) >= plant_tick:
+                continue
+            actor = _clean_name(event.get("actor"))
+            target = _clean_name(event.get("target"))
+            actor_team = player_team.get(actor.casefold())
+            target_team = player_team.get(target.casefold())
+            actor_side = (
+                _side_name(event.get("actor_side"))
+                or team_sides.get(actor_team or "")
+            )
+            target_side = (
+                _side_name(event.get("target_side"))
+                or team_sides.get(target_team or "")
+            )
+            event["actor_side"] = actor_side
+            event["target_side"] = target_side
+            if not actor_side or not target_side or actor_side == target_side:
+                continue
+            role = "break" if actor_side == "T" else "hold" if actor_side == "CT" else None
+            if not role:
+                continue
+            actor_site = site_for_area(map_name, event.get("actor_place"))
+            target_site = site_for_area(map_name, event.get("target_place"))
+            if actor_site and target_site and actor_site != target_site:
+                continue
+            site = target_site or actor_site
+            if planted_site in {"A", "B"} and site and site != planted_site:
+                continue
+            if site:
+                event["tactical_site"] = site
+                event["tactical_role"] = role
 
 
 def _time_text(tick: int, start_tick: int, tick_rate: float) -> str:
@@ -319,6 +589,12 @@ def _events_by_round(
                 "weapon": _normalize_weapon(row.get("weapon")),
                 "headshot": _bool(row.get("headshot")),
                 "assister": _clean_name(row.get("assister_name")),
+                "actor_steamid": _clean_name(row.get("attacker_steamid")),
+                "target_steamid": _clean_name(row.get("user_steamid")),
+                "actor_side": _side_name(row.get("attackerteam")),
+                "target_side": _side_name(row.get("userteam")),
+                "actor_place": _event_player_place(row, ("attacker",)),
+                "target_place": _event_player_place(row, ("user", "player", "victim")),
             }
             for role, prefixes in (
                 ("actor", ("attacker_", "attacker")),
@@ -1203,6 +1479,29 @@ def build_match_workspace(
         windows,
         shared_events.get("nade_batch"),
     )
+    round_team_sides = {
+        int(window["round_number"]): _round_team_sides(
+            int(window["round_number"]),
+            group_side_by_round,
+            team_a_group,
+            team_b_group,
+        )
+        for window in windows
+    }
+    _annotate_tactical_kills(
+        raw_events_by_round,
+        map_name=map_name,
+        player_team=player_team,
+        round_team_sides=round_team_sides,
+    )
+    duel_engagements = _build_duel_engagements(
+        hurt_df=shared_events.get("hurt_df"),
+        events_by_round=raw_events_by_round,
+        player_team=player_team,
+        round_team_sides=round_team_sides,
+        windows=windows,
+        tick_rate=tick_rate,
+    )
     shots_by_round = _shots_by_round(shared_events.get("fire_df"), windows)
     _enrich_grenade_events(
         raw_events_by_round,
@@ -1363,6 +1662,7 @@ def build_match_workspace(
     return {
         "version": 1,
         "algorithm_version": MATCH_WORKSPACE_ALGORITHM_VERSION,
+        "tactical_metrics_version": 1,
         "data_source": "demo_parser_with_derived_metrics",
         "team_assignment_source": (
             "round_side_groups" if group_side_by_round else "roster_order_fallback"
@@ -1376,6 +1676,9 @@ def build_match_workspace(
             "clutch_wins",
             "special_events",
             "phase_meta",
+            "player_places",
+            "resolved_duel_engagements",
+            "site_entry_kill_tags",
         ],
         "map_name": map_name,
         "tick_rate": float(tick_rate),
@@ -1402,6 +1705,7 @@ def build_match_workspace(
         },
         "players": stats,
         "rounds": rounds_out,
+        "duel_engagements": duel_engagements,
         "cosmetics": {
             "version": 11,
             "ownership_source": "demo_economy_entities",

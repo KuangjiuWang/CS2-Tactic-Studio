@@ -26,26 +26,34 @@ function isNewerRelease(latest, current) {
 }
 
 async function checkTacticStudioUpdate() {
+  if (import.meta.env.DEV) {
+    // A dev desktop can inspect releases, but must not replace its running source build.
+    return fetchGithubReleaseUpdate();
+  }
   try {
     return await check();
   } catch (signedError) {
     // Releases published before signed updater artifacts still need a usable update path.
     try {
-      const response = await fetch(RELEASE_API, { headers: { Accept: "application/vnd.github+json" } });
-      if (!response.ok) throw new Error(`GitHub release lookup failed: ${response.status}`);
-      const release = await response.json();
-      const version = String(release.tag_name || "").replace(/^v/i, "");
-      if (!isNewerRelease(version, await getVersion())) return null;
-      return {
-        version,
-        body: typeof release.body === "string" ? release.body : "",
-        rawJson: { update_mode: "normal", manual_url: RELEASE_PAGE },
-        close: async () => {},
-      };
+      return await fetchGithubReleaseUpdate();
     } catch {
       throw signedError;
     }
   }
+}
+
+async function fetchGithubReleaseUpdate() {
+  const response = await fetch(RELEASE_API, { headers: { Accept: "application/vnd.github+json" } });
+  if (!response.ok) throw new Error(`GitHub release lookup failed: ${response.status}`);
+  const release = await response.json();
+  const version = String(release.tag_name || "").replace(/^v/i, "");
+  if (!isNewerRelease(version, await getVersion())) return null;
+  return {
+    version,
+    body: typeof release.body === "string" ? release.body : "",
+    rawJson: { update_mode: "normal", manual_url: RELEASE_PAGE },
+    close: async () => {},
+  };
 }
 
 export const desktopBridge = isDesktopApp

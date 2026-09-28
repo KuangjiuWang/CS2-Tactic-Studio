@@ -79,7 +79,7 @@ export default {
   "settings.btnUpdate": "Update now",
   "settings.btnCheckUpdates": "Check for updates",
   "settings.btnCheckUpdatesLong": "Check for updates",
-  "settings.updateDevModeError": "Update check not supported in dev mode",
+  "settings.updateDevModeError": "Update checks require the desktop app.",
   "settings.updateChecking": "Checking for updates...",
   "settings.cardFfmpeg": "FFmpeg & Montage",
   "settings.cardFfmpegHint": "Montage export and encoder selection.",

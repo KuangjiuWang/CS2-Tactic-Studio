@@ -1,5 +1,6 @@
-/** 是否应走 Cloudflare / Tauri updater 检查更新（Vite dev / 浏览器模式跳过）。 */
-export async function shouldCheckAppUpdates() {
-  // A derivative build must never consume the upstream project's update feed.
-  return false;
+import { isDesktopApp } from "../desktop/desktopBridge.js";
+
+/** Production desktop builds auto-check; desktop development can check manually. */
+export async function shouldCheckAppUpdates({ manual = false } = {}) {
+  return Boolean(isDesktopApp && (import.meta.env.PROD || manual));
 }
