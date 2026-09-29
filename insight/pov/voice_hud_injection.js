@@ -138,7 +138,9 @@
     const STOCK_HUD_ALERT_RESUME_GRACE_TICKS = 128;
     const STOCK_HUD_ALERT_HIDDEN_STABLE_FRAMES = 10;
     const MOUSE_TRAIL_POINT_COUNT = 24;
-    const MOUSE_TRAIL_WINDOW_TICKS = 48;
+    // Keep the path as short visual context. A 48-tick history looked delayed
+    // beside the instantaneous keyboard state (about 0.75s at 64 ticks/s).
+    const MOUSE_TRAIL_WINDOW_TICKS = 16;
     const MOUSE_PAD_WIDTH = 78;
     const MOUSE_PAD_HEIGHT = 70;
     const MOUSE_PAD_EDGE_INSET = 6;
@@ -149,7 +151,10 @@
     const INPUT_HUD_CONTENT_RIGHT_PX = 331;
     const INPUT_HUD_CENTER_DROP_PX = 50;
     const INPUT_HUD_SIDE_DROP_PX = 150;
-    const INPUT_HUD_REFRESH_SECONDS = 0.016;
+    const COMBAT_STATS_REFRESH_SECONDS = 0.016;
+    // Poll input twice per 64 Hz demo tick so short key taps are less likely to
+    // fall between HUD updates. Combat stats keep their previous cadence.
+    const INPUT_HUD_REFRESH_SECONDS = 0.008;
     const INPUT_HUD_WEAPON_SELECT_HOLD_TICKS = 12;
     const INPUT_AUDIO_KEY_DOWN_EVENT = "CS2Insight.Input.Keyboard.Down";
     const INPUT_AUDIO_KEY_UP_EVENT = "CS2Insight.Input.Keyboard.Up";
@@ -3217,7 +3222,7 @@
     function updateCombatStatsHud() {
         // Schedule first so a transient root rebuild during spec_player cannot
         // permanently stop this independent HUD lane.
-        $.Schedule(INPUT_HUD_REFRESH_SECONDS, updateCombatStatsHud);
+        $.Schedule(COMBAT_STATS_REFRESH_SECONDS, updateCombatStatsHud);
         if (!combatStatsHudEnabled || !combatStats || !advancedPovVisualsActive()
                 || (advancedPlayback && advancedHudHidden)) {
             if (combatStatsHud && combatStatsHud.IsValid()) {

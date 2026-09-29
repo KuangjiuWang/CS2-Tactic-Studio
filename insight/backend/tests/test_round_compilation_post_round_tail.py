@@ -97,20 +97,20 @@ def test_timeline_round_does_not_add_a_second_result_tail():
 
 
 def test_tick_watcher_ignores_round_increment_during_result_phase(monkeypatch):
-    phase_calls = 0
-    round_calls = 0
+    payload_calls = 0
     sleep_calls = 0
     clock = 0.0
 
-    def fake_phase():
-        nonlocal phase_calls
-        phase_calls += 1
-        return "live" if phase_calls == 1 else "over"
-
-    def fake_round():
-        nonlocal round_calls
-        round_calls += 1
-        return 5 if round_calls == 1 else 6
+    def fake_payload(_started_at, _now):
+        nonlocal payload_calls
+        payload_calls += 1
+        if payload_calls == 1:
+            # Seeking backwards can briefly leave GSI on the previous segment's
+            # later round. It must not arm the phase guard or stop this segment.
+            return {"round": {"phase": "live"}, "map": {"round": 6}}
+        if payload_calls == 2:
+            return {"round": {"phase": "live"}, "map": {"round": 5}}
+        return {"round": {"phase": "over"}, "map": {"round": 6}}
 
     async def fake_sleep(_seconds):
         nonlocal sleep_calls
@@ -121,8 +121,7 @@ def test_tick_watcher_ignores_round_increment_during_result_phase(monkeypatch):
         clock += 0.05
         return clock
 
-    monkeypatch.setattr(executor_module, "_get_gsi_round_phase", fake_phase)
-    monkeypatch.setattr(executor_module, "_get_gsi_current_round", fake_round)
+    monkeypatch.setattr(executor_module, "_get_fresh_gsi_payload", fake_payload)
     monkeypatch.setattr(executor_module.asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(executor_module.time, "monotonic", fake_monotonic)
 

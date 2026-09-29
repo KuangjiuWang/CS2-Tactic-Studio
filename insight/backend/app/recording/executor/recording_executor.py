@@ -46,6 +46,9 @@ _SPEC_OVERSHOOT_RESYNC_SEC: float = 0.2
 _TICK_WATCHER_POLL_SEC: float = 0.1
 # Log the tick watcher status every N polls (0.1s * 50 = 5s).
 _TICK_WATCHER_LOG_EVERY: int = 50
+# GSI emits frequently during playback. Ignore old/stalled snapshots so a prior
+# segment's round phase cannot stop a newly sought segment.
+_GSI_MAX_AGE_SEC: float = 1.0
 
 
 def _resolve_prepare_timing(pre_roll_sec: float, prepare_elapsed_sec: float) -> tuple[float, float, bool]:
@@ -64,44 +67,23 @@ def _resolve_prepare_timing(pre_roll_sec: float, prepare_elapsed_sec: float) -> 
     )
 
 
-def _get_gsi_current_round() -> Optional[int]:
-    """Return the current round number from the latest GSI payload, or None."""
+def _get_fresh_gsi_payload(started_at: float, now: float) -> Optional[dict[str, Any]]:
+    """Return one coherent GSI snapshot received during this active segment."""
     try:
         from ...gsi_ready import gsi_status
         status = gsi_status()
-        payload = status.get("last_payload") if isinstance(status, dict) else None
-        if not isinstance(payload, dict) or not payload:
+        if not isinstance(status, dict):
             return None
-        map_obj = payload.get("map")
-        if not isinstance(map_obj, dict):
+        payload = status.get("last_payload")
+        payload_at = float(status.get("last_payload_at") or 0.0)
+        if (
+            not isinstance(payload, dict)
+            or not payload
+            or payload_at <= started_at
+            or now - payload_at > _GSI_MAX_AGE_SEC
+        ):
             return None
-        val = map_obj.get("round")
-        if val is None:
-            return None
-        return int(val)
-    except Exception:
-        return None
-
-
-def _get_gsi_round_phase() -> Optional[str]:
-    """Return the current round phase string from the latest GSI payload, or None.
-
-    Possible values: "live", "over", "freezetime", "warmup", etc.
-    "over" means the round-result presentation is active; "freezetime" means the
-    next round's buy phase has started.  Only the latter is a safe hard stop for a
-    round compilation that deliberately keeps a post-round tail.
-    """
-    try:
-        from ...gsi_ready import gsi_status
-        status = gsi_status()
-        payload = status.get("last_payload") if isinstance(status, dict) else None
-        if not isinstance(payload, dict) or not payload:
-            return None
-        round_obj = payload.get("round")
-        if not isinstance(round_obj, dict):
-            return None
-        phase = round_obj.get("phase")
-        return str(phase).lower() if phase is not None else None
+        return payload
     except Exception:
         return None
 
@@ -112,10 +94,12 @@ async def _record_until_tick(
     abort_event: Optional[asyncio.Event] = None,
     *,
     overhead_sec: float = 0.0,
+    started_at: Optional[float] = None,
 ) -> str:
     """
     Wait until the demo reaches segment.end_tick, then return "done".
-    Checks abort_event every second so the recording can be interrupted mid-sleep.
+    Uses a monotonic deadline anchored to demo resume, and checks abort_event at
+    least every 100 ms. OBS fades therefore consume the segment's tick budget.
 
     overhead_sec: net ticks already consumed relative to start_tick.
       = spec_elapsed - pre_roll_sec
@@ -128,18 +112,20 @@ async def _record_until_tick(
         "[RecordingV3] record_until_tick: base=%.2fs overhead=%.2fs sleeping=%.2fs",
         base_duration, overhead_sec, duration_sec,
     )
-    elapsed = 0.0
-    chunk = 1.0
-    while elapsed < duration_sec:
+    clock_start = time.monotonic() if started_at is None else started_at
+    deadline = clock_start + duration_sec
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return "done"
         if abort_event and abort_event.is_set():
+            elapsed = max(0.0, time.monotonic() - clock_start)
             logger.info(
                 "[RecordingV3] record_until_tick: abort signalled at %.2fs / %.2fs",
                 elapsed, duration_sec,
             )
             return "aborted"
-        await asyncio.sleep(min(chunk, duration_sec - elapsed))
-        elapsed += chunk
-    return "done"
+        await asyncio.sleep(min(_TICK_WATCHER_POLL_SEC, remaining))
 
 
 async def _record_until_tick_round_segment(
@@ -147,6 +133,9 @@ async def _record_until_tick_round_segment(
     tick_rate: float,
     abort_event: Optional[asyncio.Event],
     warnings: list[str],
+    *,
+    started_at: Optional[float] = None,
+    overhead_sec: float = 0.0,
 ) -> str:
     """
     Round-segment tick watcher: stops OBS as soon as the demo reaches segment.end_tick.
@@ -188,12 +177,21 @@ async def _record_until_tick_round_segment(
     else:
         effective_end_tick = end_tick
 
-    base_duration = max(0.1, (effective_end_tick - start_tick) / tick_rate)
+    elapsed_before_recording = max(0.0, overhead_sec)
+    base_duration = max(
+        0.1,
+        (effective_end_tick - start_tick) / tick_rate - elapsed_before_recording,
+    )
+    t0 = time.monotonic() if started_at is None else started_at
     # Hard deadline: full duration + 10 s grace so a stalled GSI can't block forever.
-    hard_deadline = time.monotonic() + base_duration + 10.0
+    hard_deadline = t0 + base_duration + 10.0
 
     gsi_seen = False
     gsi_unavailable_warned = False
+    # A post-resume GSI packet can still describe the previous seek position.
+    # Do not trust its phase or round-advance signal until this segment's round
+    # has been observed at least once.
+    gsi_target_round_seen = target_round is None
     # Phase guard: only fires AFTER the round goes "live" for the first time.
     # This prevents a false stop during the pre-roll freeze window that starts
     # before freeze_end_tick — at that point GSI still reports "freezetime" for
@@ -207,8 +205,6 @@ async def _record_until_tick_round_segment(
     # target_round. Neither signal represents a real next round, so both GSI-based
     # stop conditions are disabled here — wall-clock timing takes over instead.
     is_final_alive = segment.is_final_round and is_alive_round
-    t0 = time.monotonic()
-
     logger.info(
         "[RecordingV3][TickWatcher] segment=%d start=%d end=%d effective_end=%d "
         "duration=%.2fs round=%s",
@@ -224,8 +220,11 @@ async def _record_until_tick_round_segment(
 
         await asyncio.sleep(_TICK_WATCHER_POLL_SEC)
         poll_count += 1
-        elapsed = time.monotonic() - t0
-        estimated_tick = start_tick + int(elapsed * tick_rate)
+        now = time.monotonic()
+        elapsed = max(0.0, now - t0)
+        estimated_tick = start_tick + int(
+            (elapsed_before_recording + elapsed) * tick_rate
+        )
 
         if poll_count % _TICK_WATCHER_LOG_EVERY == 0:
             logger.info(
@@ -244,14 +243,29 @@ async def _record_until_tick_round_segment(
         #        behaviour) since the window ends shortly after the player dies.
         # This prevents a false stop when the demo seeked into the pre-roll freeze
         # window and GSI still reports "freezetime" for the current round.
-        gsi_phase = _get_gsi_round_phase()
-        if gsi_phase == "live" and not phase_guard_armed:
+        gsi_payload = _get_fresh_gsi_payload(t0, now)
+        gsi_phase: Optional[str] = None
+        gsi_round: Optional[int] = None
+        if gsi_payload is not None:
+            gsi_seen = True
+            round_obj = gsi_payload.get("round")
+            if isinstance(round_obj, dict) and round_obj.get("phase") is not None:
+                gsi_phase = str(round_obj["phase"]).lower()
+            map_obj = gsi_payload.get("map")
+            if isinstance(map_obj, dict) and map_obj.get("round") is not None:
+                try:
+                    gsi_round = int(map_obj["round"])
+                except (TypeError, ValueError, OverflowError):
+                    gsi_round = None
+            if target_round is not None and gsi_round == target_round:
+                gsi_target_round_seen = True
+        if gsi_target_round_seen and gsi_phase == "live" and not phase_guard_armed:
             phase_guard_armed = True
             logger.info(
                 "[RecordingV3][TickWatcher] segment=%d phase guard armed at estimated_tick=%d",
                 seg_idx, estimated_tick,
             )
-        elif phase_guard_armed:
+        elif gsi_target_round_seen and phase_guard_armed:
             # is_final_alive: disable GSI phase stop — see comment above t0.
             if not is_final_alive:
                 # Both alive and death rounds stop only on "freezetime":
@@ -276,9 +290,7 @@ async def _record_until_tick_round_segment(
         # round, so defer to the planned tick tail until freezetime arrives.
         # Skip for final-round alive player — map.round may transiently exceed
         # target_round during the end-game transition and must not stop recording.
-        gsi_round = _get_gsi_current_round()
-        if gsi_round is not None:
-            gsi_seen = True
+        if gsi_target_round_seen and gsi_round is not None:
             if target_round is not None and gsi_round > target_round:
                 if is_final_alive:
                     logger.info(
@@ -299,13 +311,21 @@ async def _record_until_tick_round_segment(
                         seg_idx, gsi_round, target_round, estimated_tick,
                     )
                     return "done"
-        else:
-            if not gsi_seen and not gsi_unavailable_warned and elapsed > 5.0:
-                # GSI has been silent for 5 s since recording started.
+
+        if not gsi_unavailable_warned and elapsed > 5.0:
+            if not gsi_seen:
                 msg = (
                     f"segment {seg_idx}: round_segment_requires_current_tick — "
                     "GSI silent; using wall-clock tick estimate (may drift during freeze/pause)"
                 )
+            elif not gsi_target_round_seen:
+                msg = (
+                    f"segment {seg_idx}: GSI has not confirmed target round {target_round}; "
+                    "ignoring GSI stop signals and using wall-clock tick estimate"
+                )
+            else:
+                msg = ""
+            if msg:
                 warnings.append(msg)
                 logger.warning("[RecordingV3][TickWatcher] %s", msg)
                 gsi_unavailable_warned = True
@@ -320,7 +340,7 @@ async def _record_until_tick_round_segment(
             return "done"
 
         # Hard deadline guard.
-        if time.monotonic() >= hard_deadline:
+        if now >= hard_deadline:
             logger.warning(
                 "[RecordingV3][TickWatcher] segment=%d hard deadline exceeded; stopping OBS",
                 seg_idx,
@@ -898,7 +918,12 @@ class RecordingExecutor:
                 # a coarse 1-second wall-clock sleep.
                 if segment.source_type == SourceType.round:
                     tick_result = await _record_until_tick_round_segment(
-                        segment, plan.tick_rate, self._abort_event, result.warnings,
+                        segment,
+                        plan.tick_rate,
+                        self._abort_event,
+                        result.warnings,
+                        started_at=demo_resume_mono,
+                        overhead_sec=record_overhead_sec,
                     )
                 else:
                     tick_result = await _record_until_tick(
@@ -906,6 +931,7 @@ class RecordingExecutor:
                         plan.tick_rate,
                         self._abort_event,
                         overhead_sec=record_overhead_sec,
+                        started_at=demo_resume_mono,
                     )
 
                 if tick_result == "aborted":

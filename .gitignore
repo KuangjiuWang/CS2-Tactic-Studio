@@ -8,6 +8,14 @@ artifacts/
 .cache/
 *.log
 
+# The desktop resource staging script builds these open-source Rust helpers.
+# Keep their source in Git while leaving generated Cargo artifacts ignored.
+!/insight/tools/
+insight/tools/*
+!/insight/tools/demo-cosmetic-rewriter/
+!/insight/tools/demo-cosmetic-rewriter/**
+/insight/tools/demo-cosmetic-rewriter/target/
+
 # Local release copies, caches, and developer-only credentials
 /CS2-Tactic-Studio/
 /CS2-Tactic-Studio-OBS-Updated/

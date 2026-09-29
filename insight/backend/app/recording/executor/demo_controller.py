@@ -31,7 +31,9 @@ async def gototick(tick: int, verify_tolerance_ticks: int = 32) -> None:
 
     Raises DemoSeekError on platform failure.
     """
-    cmds = ["demo_pause", f"demo_gototick {int(tick)}"]
+    # A previous playback session may have left CS2 at a non-1x speed.
+    # Recording deadlines and the HUD tracks are based on normal demo ticks.
+    cmds = ["demo_pause", "demo_timescale 1", f"demo_gototick {int(tick)}"]
     try:
         await asyncio.to_thread(inject_console_sequence, cmds)
     except Exception as e:

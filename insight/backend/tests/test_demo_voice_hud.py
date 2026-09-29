@@ -1070,7 +1070,7 @@ def test_checked_in_voice_template_contains_only_an_empty_payload():
     assert b"offsetY = 33.5 - newest.y * scale" not in script
     assert b"function updateMouseMotionPad(samples, xuid, tick)" in script
     assert b"updateMouseMotionPad(mouseSamples, xuid, tick)" in script
-    assert b"const INPUT_HUD_REFRESH_SECONDS = 0.016" in script
+    assert b"const INPUT_HUD_REFRESH_SECONDS = 0.008" in script
     assert b"function advanceInputAudio(edges, xuid, tick)" in script
     assert b'$.DispatchEvent("CSGOPlaySoundEffect", soundEvent, "MOUSE")' in script
     assert b"const INPUT_HUD_SCOREBOARD_BIT = 12" in script
