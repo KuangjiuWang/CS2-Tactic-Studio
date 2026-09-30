@@ -58,7 +58,8 @@ class DemoVoiceHudError(RuntimeError):
 # match-damage state at every relevant network update tick; index 20 explicitly
 # selects POV-native HUD visuals. Auxiliary recording overlays leave it disabled
 # so loading their shared Panorama controller preserves CS2's spectator HUD;
-# index 21 carries input-state resets on player death and slot identity changes.
+# index 21 carries input-state resets on round starts, player deaths, and slot
+# identity changes.
 RADAR_PAYLOAD_INDEX = 8
 KILL_FEEDBACK_PAYLOAD_INDEX = 9
 FLASH_BLIND_PAYLOAD_INDEX = 10
@@ -3780,12 +3781,13 @@ def _identity_bound_input_state_resets(
 ) -> list[list[str]]:
     """Encode exact ticks that must clear held input for an XUID.
 
-    A death or a player-slot identity change can end a player's command stream
-    without a matching button-up edge. Carry those lifecycle boundaries beside
-    the input tracks so the Panorama HUD can release any remaining held keys.
+    Round boundaries, death, or a player-slot identity change can end a player's
+    command stream without a matching button-up edge. Carry those lifecycle
+    boundaries beside the input tracks so Panorama releases any held keys.
     """
     identity_reset_ticks_by_xuid: dict[int, set[int]] = defaultdict(set)
     death_reset_ticks_by_xuid: dict[int, set[int]] = defaultdict(set)
+    round_reset_ticks: set[int] = set()
 
     for updates in _identity_timeline_by_slot(report).values():
         previous_xuid = 0
@@ -3795,6 +3797,39 @@ def _identity_bound_input_state_resets(
             previous_xuid = xuid
 
     if parser is not None:
+        try:
+            round_rows = parser.parse_event("round_start")
+        except Exception:  # noqa: BLE001 - round boundaries are best effort
+            round_rows = None
+        round_ticks = (
+            sorted(
+                {
+                    tick
+                    for tick in (_as_int(raw_tick) for raw_tick in _row_values(round_rows, "tick"))
+                    if tick is not None and tick >= 0
+                }
+            )
+            if isinstance(round_rows, Mapping)
+            else []
+        )
+        if not round_ticks:
+            # Some demos omit round_start but retain the freeze-end events. Use
+            # those only as a fallback so inputs from freeze time are preserved
+            # when the authoritative round-start timeline is available.
+            try:
+                round_rows = parser.parse_event("round_freeze_end")
+            except Exception:  # noqa: BLE001 - round boundaries are best effort
+                round_rows = None
+            if isinstance(round_rows, Mapping):
+                round_ticks = sorted(
+                    {
+                        tick
+                        for tick in (_as_int(raw_tick) for raw_tick in _row_values(round_rows, "tick"))
+                        if tick is not None and tick >= 0
+                    }
+                )
+        round_reset_ticks.update(round_ticks)
+
         try:
             rows = parser.parse_event("player_death")
         except Exception:  # noqa: BLE001 - lifecycle reset is best effort
@@ -3820,7 +3855,11 @@ def _identity_bound_input_state_resets(
                     death_reset_ticks_by_xuid[victim].add(tick + 1)
 
     tracks: list[list[str]] = []
-    all_xuids = sorted(set(identity_reset_ticks_by_xuid) | set(death_reset_ticks_by_xuid))
+    all_xuids = sorted(
+        set(identity_reset_ticks_by_xuid)
+        | set(death_reset_ticks_by_xuid)
+        | (set(roster_xuids) if round_reset_ticks else set())
+    )
 
     def encode_ticks(ticks: set[int]) -> str:
         previous_tick = 0
@@ -3834,6 +3873,7 @@ def _identity_bound_input_state_resets(
         encoded_resets = encode_ticks(
             identity_reset_ticks_by_xuid.get(xuid, set())
             | death_reset_ticks_by_xuid.get(xuid, set())
+            | round_reset_ticks
         )
         if encoded_resets:
             tracks.append([
@@ -3918,7 +3958,7 @@ def add_input_tracks_to_payload(
         else:
             reset_parser_factory = parser_factory
         reset_parser = reset_parser_factory(str(demo_path))
-    except Exception:  # noqa: BLE001 - identity resets still work without parser events
+    except Exception:  # noqa: BLE001 - slot identity resets still work without parser events
         reset_parser = None
     packed[INPUT_STATE_RESET_PAYLOAD_INDEX] = _identity_bound_input_state_resets(
         input_track_report,

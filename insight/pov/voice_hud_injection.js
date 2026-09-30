@@ -1027,6 +1027,7 @@
     let advancedRoundHintLabel = null;
     let advancedRoundPickerPanel = null;
     let advancedRoundPickerOpen = false;
+    let advancedRoundSeekGeneration = 0;
     const advancedRoundButtons = [];
     let advancedMenuPinned = true;
     let advancedNativeMessagesRestored = false;
@@ -7203,23 +7204,122 @@
         button.style.brightness = enabled ? "1" : "0.7";
     }
 
+    function advancedSetDemoPaused(paused) {
+        const command = paused ? "demo_pause" : "demo_resume";
+        try {
+            if (controller.SetPaused) {
+                controller.SetPaused(Boolean(paused));
+                return true;
+            }
+        } catch (errControllerPause) {}
+        try {
+            GameInterfaceAPI.ConsoleCommand(command);
+            return true;
+        } catch (errConsolePause) {}
+        return false;
+    }
+
+    function advancedIssueDemoGotoTick(tick, useControllerFallback) {
+        const targetTick = Math.max(0, Math.floor(Number(tick) || 0));
+        let consoleSent = false;
+        if (!useControllerFallback) {
+            try {
+                if (controller.GotoTick) {
+                    controller.GotoTick(targetTick);
+                    return true;
+                }
+            } catch (errControllerGoto) {}
+        }
+        try {
+            GameInterfaceAPI.ConsoleCommand("demo_gototick " + targetTick);
+            consoleSent = true;
+        } catch (errConsoleGoto) {}
+        if (!consoleSent || useControllerFallback) {
+            try {
+                if (controller.GotoTick) {
+                    controller.GotoTick(targetTick);
+                    return true;
+                }
+            } catch (errControllerFallbackGoto) {}
+        }
+        return consoleSent;
+    }
+
+    function advancedSeekToRound(round) {
+        if (!round) {
+            return;
+        }
+        const targetTick = Math.max(0, Math.floor(Number(round.start) || 0));
+        const state = controller.GetDemoControllerState();
+        const wasPaused = state && typeof state.bIsPaused === "boolean"
+            ? state.bIsPaused
+            : null;
+        const generation = ++advancedRoundSeekGeneration;
+        let pollCount = 0;
+        let retried = false;
+
+        advancedRoundPickerOpen = false;
+        advancedRenderRoundPicker();
+        advancedSetDemoPaused(true);
+        advancedIssueDemoGotoTick(targetTick, false);
+
+        function confirmRoundSeek() {
+            if (generation !== advancedRoundSeekGeneration) {
+                return;
+            }
+            const currentState = controller.GetDemoControllerState();
+            const rawCurrentTick = currentState && currentState.nTick;
+            const currentTick = rawCurrentTick !== null && rawCurrentTick !== undefined
+                ? Number(rawCurrentTick)
+                : NaN;
+            if (isFinite(currentTick) && Math.abs(currentTick - targetTick) <= 16) {
+                advancedRefreshRoundSelector(currentState);
+                if (wasPaused === false) {
+                    $.Schedule(0.1, function () {
+                        if (generation === advancedRoundSeekGeneration) {
+                            advancedSetDemoPaused(false);
+                        }
+                    });
+                }
+                return;
+            }
+
+            pollCount += 1;
+            if (pollCount >= (retried ? 80 : 12)) {
+                if (!retried) {
+                    retried = true;
+                    pollCount = 0;
+                    advancedSetDemoPaused(true);
+                    advancedIssueDemoGotoTick(targetTick, true);
+                } else {
+                    $.Msg(
+                        "[CS2 Insight] round seek did not reach tick " + targetTick
+                            + "; current tick=" + (isFinite(currentTick) ? currentTick : "unknown"),
+                    );
+                    if (wasPaused === false) {
+                        advancedSetDemoPaused(false);
+                    }
+                    return;
+                }
+            }
+            $.Schedule(0.05, confirmRoundSeek);
+        }
+
+        $.Schedule(0.05, confirmRoundSeek);
+    }
+
     function advancedSeekRelativeRound(delta) {
         const state = controller.GetDemoControllerState();
         const tick = state ? Number(state.nTick || 0) : 0;
         const currentIndex = advancedRoundIndexAtTick(tick);
-        const targetIndex = Math.max(
-            0,
-            Math.min(advancedRoundIntervals.length - 1, currentIndex + Number(delta || 0)),
-        );
-        if (currentIndex < 0 || targetIndex === currentIndex || !advancedRoundIntervals[targetIndex]) {
+        const step = Number(delta || 0);
+        const targetIndex = currentIndex < 0
+            ? (step > 0 ? 0 : -1)
+            : Math.max(0, Math.min(advancedRoundIntervals.length - 1, currentIndex + step));
+        if (targetIndex < 0 || targetIndex === currentIndex || !advancedRoundIntervals[targetIndex]) {
             return true;
         }
-        advancedRoundPickerOpen = false;
-        advancedRenderRoundPicker();
-        const xuid = advancedSelectedXuid || (state ? currentPovXuid(state) : "");
-        if (xuid && advancedPlayback.byXuid[normalizeXuid(xuid)]) {
-            advancedSelectPlayer(xuid, { tick: advancedRoundIntervals[targetIndex].start });
-        }
+        advancedSeekToRound(advancedRoundIntervals[targetIndex]);
         return true;
     }
 
@@ -7230,7 +7330,7 @@
         advancedSetRoundStepEnabled(advancedPreviousRoundButton, currentIndex > 0);
         advancedSetRoundStepEnabled(
             advancedNextRoundButton,
-            currentIndex >= 0 && currentIndex < advancedRoundIntervals.length - 1,
+            advancedRoundIntervals.length > 0 && currentIndex < advancedRoundIntervals.length - 1,
         );
         if (advancedRoundButton && advancedRoundButton.IsValid()) {
             advancedSetButtonText(advancedRoundButton, advancedRoundButtonText(currentRound));
@@ -7277,13 +7377,7 @@
                     pickerRow,
                     String(round.number),
                     function () {
-                        advancedRoundPickerOpen = false;
-                        advancedRenderRoundPicker();
-                        const state = controller.GetDemoControllerState();
-                        const xuid = advancedSelectedXuid || (state ? currentPovXuid(state) : "");
-                        if (xuid && advancedPlayback.byXuid[normalizeXuid(xuid)]) {
-                            advancedSelectPlayer(xuid, { tick: round.start });
-                        }
+                        advancedSeekToRound(round);
                     },
                     "48px",
                 );
