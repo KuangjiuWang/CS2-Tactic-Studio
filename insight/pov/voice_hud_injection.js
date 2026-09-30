@@ -956,6 +956,11 @@
     let inputHudRenderedXuid = "";
     let inputHudRenderedTick = -1;
     let inputHudAppliedSignature = "";
+    const INPUT_HUD_OWNER_ATTRIBUTE = "cs2_insight_input_hud_owner";
+    const inputHudInstanceToken = String((new Date()).getTime())
+        + ":" + String(Math.random());
+    let inputHudClaimedRoot = null;
+    let inputHudOwnershipSupported = true;
     let inputAudioXuid = "";
     let inputAudioLastTick = -1;
     let inputAudioEdgeIndex = -1;
@@ -1112,24 +1117,16 @@
         return text;
     }
 
-    function currentInputHudXuid(state) {
-        // During spec_player, GetHudPlayerXuid can briefly retain the previous
-        // HUD subject. Prefer the demo controller's current spectator slot
-        // when it resolves to a player in this demo, so input never stays bound
-        // to the role that was selected before the POV switch.
-        const slot = state ? Number(state.nSpectatingPlayerId) : NaN;
-        if (isFinite(slot) && slot >= 0 && slot < 64) {
-            let slotXuid = "";
-            try {
-                slotXuid = normalizeXuid(
-                    GameStateAPI.GetPlayerXuidStringFromPlayerSlot(slot) || "",
-                );
-            } catch (errInputPovSlot) {}
-            if (slotXuid && rosterByXuid[slotXuid]) {
-                return slotXuid;
-            }
-        }
-        return currentPovXuid(state);
+    function currentInputHudXuid() {
+        // The HUD subject is the player actually visible in the captured POV.
+        // nSpectatingPlayerId is not guaranteed to be a GameStateAPI player slot.
+        // Binding input through that number can select a different player's
+        // track even after spec_player has completed.
+        // A short blank handoff is preferable to attributing input to another POV.
+        let xuid = "";
+        try { xuid = normalizeXuid(GameStateAPI.GetHudPlayerXuid() || ""); }
+        catch (errInputPovXuid) {}
+        return xuid && rosterByXuid[xuid] ? xuid : "";
     }
 
     function sameXuid(a, b) {
@@ -3022,16 +3019,80 @@
         inputHudRenderedTick = -1;
     }
 
+    function inputHudOwnsRoot(root) {
+        if (!inputHudOwnershipSupported) {
+            return true;
+        }
+        try {
+            return String(root.GetAttributeString(INPUT_HUD_OWNER_ATTRIBUTE, "") || "")
+                === inputHudInstanceToken;
+        } catch (errInputHudOwnerRead) {
+            inputHudOwnershipSupported = false;
+            return true;
+        }
+    }
+
+    function claimInputHudRoot(root) {
+        if (!root || !root.IsValid()) {
+            return false;
+        }
+        if (inputHudClaimedRoot === root) {
+            return inputHudOwnsRoot(root);
+        }
+        try {
+            root.SetAttributeString(INPUT_HUD_OWNER_ATTRIBUTE, inputHudInstanceToken);
+        } catch (errInputHudOwnerWrite) {
+            inputHudOwnershipSupported = false;
+        }
+        inputHudClaimedRoot = root;
+        inputHud = null;
+        inputKeyPanels = [];
+        inputMousePad = null;
+        inputMouseHeadDot = null;
+        inputHudStatusLabel = null;
+        inputMouseTrailSegments = [];
+        inputHudRenderedXuid = "";
+        inputHudRenderedTick = -1;
+        inputHudAppliedSignature = "";
+        return true;
+    }
+
+    function inputHudPanelsBound(panel) {
+        return inputKeyPanels.length === 19
+            && inputKeyPanels.every(function (key) {
+                return key.panel && key.panel.IsValid()
+                    && key.panel.GetParent()
+                    && key.panel.GetParent().id === panel.id;
+            })
+            && inputMousePad && inputMousePad.IsValid()
+            && inputMouseHeadDot && inputMouseHeadDot.IsValid()
+            && inputHudStatusLabel && inputHudStatusLabel.IsValid()
+            && inputMouseTrailSegments.length === MOUSE_TRAIL_POINT_COUNT - 1
+            && inputMouseTrailSegments.every(function (segment) {
+                return segment && segment.IsValid();
+            });
+    }
+
     function ensureInputHud() {
-        if (inputHud && inputHud.IsValid()) {
+        if (inputHud && inputHud.IsValid() && inputHudPanelsBound(inputHud)) {
             applyInputHudPlacement(inputHud);
             return inputHud;
         }
         const root = findHudRoot();
-        inputHud = root.FindChildTraverse("CS2InsightInputHud");
-        if (inputHud && inputHud.IsValid()) {
-            applyInputHudPlacement(inputHud);
-            return inputHud;
+        const stale = root.FindChildTraverse("CS2InsightInputHud");
+        if (stale && stale.IsValid()) {
+            // A reconstructed huddemocontroller may leave a visible panel from
+            // a previous script context. Its labels are not bound to this
+            // context's inputKeyPanels, so retaining it yields idle keycaps.
+            stale.visible = false;
+            stale.DeleteAsync(0);
+            inputHud = null;
+            inputKeyPanels = [];
+            inputMousePad = null;
+            inputMouseHeadDot = null;
+            inputHudStatusLabel = null;
+            inputMouseTrailSegments = [];
+            return null;
         }
 
         inputHud = $.CreatePanel("Panel", root, "CS2InsightInputHud");
@@ -3642,8 +3703,17 @@
     }
 
     function updateInputHud() {
-        // Register the next pass first. A transient Panorama panel invalidation
-        // during spec_player must not permanently kill the keyboard/mouse loop.
+        // Reconstructed demo-controller scripts can coexist briefly. Only the
+        // newest context may paint the shared input panel or mirror TAB.
+        const root = findHudRoot();
+        if (!root || !root.IsValid()) {
+            $.Schedule(INPUT_HUD_REFRESH_SECONDS, updateInputHud);
+            return;
+        }
+        if (!claimInputHudRoot(root)) {
+            releaseMirroredScoreboard();
+            return;
+        }
         $.Schedule(INPUT_HUD_REFRESH_SECONDS, updateInputHud);
         const state = controller.GetDemoControllerState();
         if (!state) {
@@ -3653,7 +3723,7 @@
             return;
         }
 
-        const xuid = currentInputHudXuid(state);
+        const xuid = currentInputHudXuid();
         const changes = inputTracksByXuid[xuid];
         if (!changes) {
             hideInputHud();
@@ -3679,6 +3749,9 @@
         }
 
         const panel = ensureInputHud();
+        if (!panel) {
+            return;
+        }
         panel.visible = true;
         if (inputAudioEnabled) {
             advanceInputAudio(inputAudioEdgesByXuid[xuid] || [], xuid, tick);

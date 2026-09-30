@@ -1075,7 +1075,11 @@ def test_checked_in_voice_template_contains_only_an_empty_payload():
     assert b'$.DispatchEvent("CSGOPlaySoundEffect", soundEvent, "MOUSE")' in script
     assert b"const INPUT_HUD_SCOREBOARD_BIT = 12" in script
     assert b"function currentInputPovXuid(state)" not in script
-    assert b"const xuid = currentPovXuid(state)" in script
+    assert b"const xuid = currentInputHudXuid();" in script
+    assert b"GetHudPlayerXuid()" in script
+    assert b"function claimInputHudRoot(root)" in script
+    assert b"function inputHudPanelsBound(panel)" in script
+    assert b"stale.DeleteAsync(0)" in script
     assert b"inputHudRenderedXuid === xuid && inputHudRenderedTick === tick" in script
     assert b"function setMirroredScoreboardActive(active)" in script
     assert b'ConsoleCommand(desired ? "+showscores" : "-showscores")' in script
@@ -1333,7 +1337,8 @@ def test_checked_in_voice_template_contains_only_an_empty_payload():
     assert b'advancedRoundPickerPanel.style.flowChildren = "down"' in script
     assert b'pickerRow.style.flowChildren = "right"' in script
     assert b'rounds.slice(rowIndex * 8, (rowIndex + 1) * 8)' in script
-    assert b"advancedSelectPlayer(xuid, { tick: round.start })" in script
+    assert b"function advancedSeekToRound(round)" in script
+    assert b"const targetTick = Math.max(0, Math.floor(Number(round.start) || 0))" in script
     assert b"function advancedRoundElapsedTick(tick)" in script
     assert b"advancedFormatTick(advancedRoundElapsedTick(event.tick))" in script
     assert b'advancedRoundHintLabel.style.marginLeft = "6px"' in script
