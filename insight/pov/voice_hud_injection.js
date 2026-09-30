@@ -293,10 +293,17 @@
         let knownMask = 0;
         let heldMask = 0;
         let pressedThisTickMask = 0;
+        const lastEdgeTickByBit = new Array(16).fill(-1);
 
         function flushTick() {
             if (currentTick >= 0) {
-                states.push([currentTick, knownMask, heldMask, pressedThisTickMask]);
+                states.push([
+                    currentTick,
+                    knownMask,
+                    heldMask,
+                    pressedThisTickMask,
+                    lastEdgeTickByBit.slice(),
+                ]);
             }
         }
 
@@ -345,6 +352,7 @@
             const bit = Number(edge[1]);
             const bitMask = 1 << bit;
             knownMask |= bitMask;
+            lastEdgeTickByBit[bit] = tick;
             if (edge[2]) {
                 heldMask |= bitMask;
                 // A complete press-and-release within one tick still gets one
@@ -1102,6 +1110,26 @@
             return "";
         }
         return text;
+    }
+
+    function currentInputHudXuid(state) {
+        // During spec_player, GetHudPlayerXuid can briefly retain the previous
+        // HUD subject. Prefer the demo controller's current spectator slot
+        // when it resolves to a player in this demo, so input never stays bound
+        // to the role that was selected before the POV switch.
+        const slot = state ? Number(state.nSpectatingPlayerId) : NaN;
+        if (isFinite(slot) && slot >= 0 && slot < 64) {
+            let slotXuid = "";
+            try {
+                slotXuid = normalizeXuid(
+                    GameStateAPI.GetPlayerXuidStringFromPlayerSlot(slot) || "",
+                );
+            } catch (errInputPovSlot) {}
+            if (slotXuid && rosterByXuid[slotXuid]) {
+                return slotXuid;
+            }
+        }
+        return currentPovXuid(state);
     }
 
     function sameXuid(a, b) {
@@ -3101,7 +3129,7 @@
             }
         }
         let fallbackMask = fallbackIndex >= 0 ? Number(changes[fallbackIndex][1]) || 0 : 0;
-        const fallbackTick = fallbackIndex >= 0 ? Number(changes[fallbackIndex][0]) : -1;
+        let fallbackTick = fallbackIndex >= 0 ? Number(changes[fallbackIndex][0]) : -1;
         const sortedResets = Array.isArray(resetTicks) ? resetTicks : [];
         let resetLow = 0;
         let resetHigh = sortedResets.length - 1;
@@ -3117,6 +3145,7 @@
         }
         if (resetIndex >= 0 && sortedResets[resetIndex] > fallbackTick) {
             fallbackMask = 0;
+            fallbackTick = sortedResets[resetIndex];
         }
         if (!edgeStates || !edgeStates.length) {
             return fallbackMask;
@@ -3138,7 +3167,25 @@
         }
         const state = edgeStates[found];
         const knownMask = state[1];
-        let mask = (fallbackMask & ~knownMask) | (state[2] & knownMask);
+        const heldMask = state[2];
+        const lastEdgeTickByBit = state[4] || [];
+        let mask = 0;
+        // Aggregate changes are complete post-tick masks; exact edges are
+        // sparse. Reconcile freshness per key so an old edge cannot hide a
+        // newer aggregate state for that key.
+        for (let bit = 0; bit < 13; bit += 1) {
+            const bitMask = 1 << bit;
+            const edgeTick = Number(lastEdgeTickByBit[bit]);
+            const edgeIsNewer = (knownMask & bitMask) !== 0
+                && isFinite(edgeTick)
+                && edgeTick > fallbackTick;
+            const active = edgeIsNewer
+                ? Boolean(heldMask & bitMask)
+                : Boolean(fallbackMask & bitMask);
+            if (active) {
+                mask |= bitMask;
+            }
+        }
         if (state[0] === tick) {
             mask |= state[3];
         }
@@ -3606,7 +3653,7 @@
             return;
         }
 
-        const xuid = currentPovXuid(state);
+        const xuid = currentInputHudXuid(state);
         const changes = inputTracksByXuid[xuid];
         if (!changes) {
             hideInputHud();
