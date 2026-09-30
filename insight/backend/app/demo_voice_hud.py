@@ -57,7 +57,8 @@ class DemoVoiceHudError(RuntimeError):
 # carries the controller's authoritative K/D/A, current-round damage, and
 # match-damage state at every relevant network update tick; index 20 explicitly
 # selects POV-native HUD visuals. Auxiliary recording overlays leave it disabled
-# so loading their shared Panorama controller preserves CS2's spectator HUD.
+# so loading their shared Panorama controller preserves CS2's spectator HUD;
+# index 21 carries input-state resets on player death and slot identity changes.
 RADAR_PAYLOAD_INDEX = 8
 KILL_FEEDBACK_PAYLOAD_INDEX = 9
 FLASH_BLIND_PAYLOAD_INDEX = 10
@@ -71,6 +72,7 @@ INPUT_AUDIO_EDGE_PAYLOAD_INDEX = 17
 INPUT_PRESENTATION_PAYLOAD_INDEX = 18
 COMBAT_STATS_PAYLOAD_INDEX = 19
 POV_VISUALS_PAYLOAD_INDEX = 20
+INPUT_STATE_RESET_PAYLOAD_INDEX = 21
 WEAPON_SELECT_PAYLOAD_INDEX = 6
 INPUT_HUD_POSITIONS = ("bottom_center", "minimap_below", "weapon_right")
 DEFAULT_INPUT_HUD_POSITION = "bottom_center"
@@ -601,7 +603,7 @@ def _normalize_map_name(raw: Any) -> str:
 
 def _pad_payload_slots(
     packed: list[Any],
-    length: int = POV_VISUALS_PAYLOAD_INDEX + 1,
+    length: int = INPUT_STATE_RESET_PAYLOAD_INDEX + 1,
 ) -> list[Any]:
     if not isinstance(packed, list):
         raise DemoVoiceHudError("voice HUD payload has an unsupported shape")
@@ -3770,6 +3772,78 @@ def _identity_bound_input_audio_edges(
     return tracks, edge_count, subtick_count
 
 
+def _identity_bound_input_state_resets(
+    report: Mapping[str, Any],
+    roster_xuids: set[int],
+    *,
+    parser: Any = None,
+) -> list[list[str]]:
+    """Encode exact ticks that must clear held input for an XUID.
+
+    A death or a player-slot identity change can end a player's command stream
+    without a matching button-up edge. Carry those lifecycle boundaries beside
+    the input tracks so the Panorama HUD can release any remaining held keys.
+    """
+    identity_reset_ticks_by_xuid: dict[int, set[int]] = defaultdict(set)
+    death_reset_ticks_by_xuid: dict[int, set[int]] = defaultdict(set)
+
+    for updates in _identity_timeline_by_slot(report).values():
+        previous_xuid = 0
+        for tick, xuid in updates:
+            if previous_xuid in roster_xuids and xuid != previous_xuid:
+                identity_reset_ticks_by_xuid[previous_xuid].add(tick)
+            previous_xuid = xuid
+
+    if parser is not None:
+        try:
+            rows = parser.parse_event("player_death")
+        except Exception:  # noqa: BLE001 - lifecycle reset is best effort
+            rows = None
+        if isinstance(rows, Mapping):
+            ticks = rows.get("tick")
+            victims = next(
+                (
+                    rows.get(name)
+                    for name in ("user_steamid", "victim_steamid")
+                    if isinstance(rows.get(name), list)
+                ),
+                None,
+            )
+            if isinstance(ticks, list) and isinstance(victims, list):
+                for raw_tick, raw_victim in zip(ticks, victims):
+                    tick = _as_int(raw_tick)
+                    victim = _as_positive_int(raw_victim)
+                    if tick is None or tick < 0 or victim not in roster_xuids:
+                        continue
+                    # Keep all input through the death tick itself, then clear
+                    # on the next tick so a same-tick final shot remains visible.
+                    death_reset_ticks_by_xuid[victim].add(tick + 1)
+
+    tracks: list[list[str]] = []
+    all_xuids = sorted(set(identity_reset_ticks_by_xuid) | set(death_reset_ticks_by_xuid))
+
+    def encode_ticks(ticks: set[int]) -> str:
+        previous_tick = 0
+        encoded_ticks: list[str] = []
+        for tick in sorted(ticks):
+            encoded_ticks.append(_base36(tick - previous_tick))
+            previous_tick = tick
+        return ",".join(encoded_ticks)
+
+    for xuid in all_xuids:
+        encoded_resets = encode_ticks(
+            identity_reset_ticks_by_xuid.get(xuid, set())
+            | death_reset_ticks_by_xuid.get(xuid, set())
+        )
+        if encoded_resets:
+            tracks.append([
+                str(xuid),
+                encoded_resets,
+                encode_ticks(death_reset_ticks_by_xuid.get(xuid, set())),
+            ])
+    return tracks
+
+
 def add_input_tracks_to_payload(
     voice_payload: bytes,
     demo_path: str | Path,
@@ -3835,6 +3909,22 @@ def add_input_tracks_to_payload(
         _identity_bound_input_audio_edges(input_track_report, slot_to_xuid)
     )
     packed[INPUT_AUDIO_EDGE_PAYLOAD_INDEX] = audio_edge_tracks
+    reset_parser = None
+    try:
+        if parser_factory is None:
+            from demoparser2 import DemoParser
+
+            reset_parser_factory = DemoParser
+        else:
+            reset_parser_factory = parser_factory
+        reset_parser = reset_parser_factory(str(demo_path))
+    except Exception:  # noqa: BLE001 - identity resets still work without parser events
+        reset_parser = None
+    packed[INPUT_STATE_RESET_PAYLOAD_INDEX] = _identity_bound_input_state_resets(
+        input_track_report,
+        set(slot_to_xuid.values()),
+        parser=reset_parser,
+    )
     mouse_samples = sum(encoded.count(",") + 1 for _, encoded in mouse_tracks)
     payload = json.dumps(packed, ensure_ascii=True, separators=(",", ":")).encode("ascii")
 

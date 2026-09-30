@@ -13,7 +13,8 @@
 // left_hand_desired switch edges at index 16, exact input-audio button edges at
 // index 17, per-session input-HUD presentation settings at index 18, and
 // authoritative controller K/D/A + damage state tracks at index 19, and the
-// explicit recording POV-visuals switch at index 20].
+// explicit recording POV-visuals switch at index 20, and input-state reset
+// ticks at index 21].
 ;(function CS2InsightDemoVoiceHud() {
     "use strict";
 
@@ -35,6 +36,7 @@
     const encodedInputAudioEdges = packed[17] || [];
     const encodedInputPresentation = Array.isArray(packed[18]) ? packed[18] : [];
     const encodedCombatStats = packed[19] || null;
+    const encodedInputStateResets = packed[21] || [];
     // Old payloads predate auxiliary recording overlays and were always POV.
     // Defaulting to true preserves those packages while new normal recordings
     // explicitly send false and retain CS2's native spectator HUD.
@@ -269,12 +271,98 @@
         handSwitchTracksByXuid[String(encoded[0])] = changes;
     });
     const inputAudioEdgesByXuid = {};
+    const inputEdgeStatesByXuid = {};
+    const inputResetTicksByXuid = {};
+    const inputDeathResetTicksByXuid = {};
+    const INPUT_HUD_BUTTON_MASK = (1 << 13) - 1;
+
+    function appendInputResetTick(xuid, tick) {
+        const key = String(xuid || "");
+        const value = Number(tick);
+        if (!key || !isFinite(value) || value < 0) {
+            return;
+        }
+        if (!inputResetTicksByXuid[key]) {
+            inputResetTicksByXuid[key] = [];
+        }
+        inputResetTicksByXuid[key].push(Math.floor(value));
+    }
+
+    function buildInputEdgeStateTrack(edges, resetTicks) {
+        const states = [];
+        const events = [];
+        let currentTick = -1;
+        let knownMask = 0;
+        let heldMask = 0;
+        let pressedThisTickMask = 0;
+
+        function flushTick() {
+            if (currentTick >= 0) {
+                states.push([currentTick, knownMask, heldMask, pressedThisTickMask]);
+            }
+        }
+
+        (edges || []).forEach(function (edge, order) {
+            const tick = Number(edge[0]);
+            const bit = Number(edge[1]);
+            if (!isFinite(tick) || tick < 0 || !isFinite(bit) || bit < 0 || bit > 15) {
+                return;
+            }
+            events.push({ tick: tick, edge: edge, reset: false, order: order });
+        });
+        (resetTicks || []).forEach(function (tick) {
+            const value = Number(tick);
+            if (isFinite(value) && value >= 0) {
+                events.push({ tick: value, edge: null, reset: true, order: -1 });
+            }
+        });
+        events.sort(function (left, right) {
+            if (left.tick !== right.tick) {
+                return left.tick - right.tick;
+            }
+            if (left.reset !== right.reset) {
+                return left.reset ? -1 : 1;
+            }
+            return left.order - right.order;
+        });
+
+        events.forEach(function (event) {
+            const tick = event.tick;
+            if (tick !== currentTick) {
+                flushTick();
+                currentTick = tick;
+                pressedThisTickMask = 0;
+            }
+            if (event.reset) {
+                knownMask |= INPUT_HUD_BUTTON_MASK;
+                heldMask = 0;
+                pressedThisTickMask = 0;
+                return;
+            }
+            const edge = event.edge;
+            const bit = Number(edge[1]);
+            const bitMask = 1 << bit;
+            knownMask |= bitMask;
+            if (edge[2]) {
+                heldMask |= bitMask;
+                // A complete press-and-release within one tick still gets one
+                // visible frame, matching the aggregate UserCmd track.
+                pressedThisTickMask |= bitMask;
+            } else {
+                heldMask &= ~bitMask;
+            }
+        });
+        flushTick();
+        return states;
+    }
+
     encodedInputAudioEdges.forEach(function (encoded) {
         if (!Array.isArray(encoded) || typeof encoded[1] !== "string") {
             return;
         }
         let previousTick = 0;
-        inputAudioEdgesByXuid[String(encoded[0])] = encoded[1].split(",").filter(Boolean).map(function (token) {
+        const xuid = String(encoded[0]);
+        const edges = encoded[1].split(",").filter(Boolean).map(function (token) {
             const fields = token.split(".");
             const tick = previousTick + parseInt(fields[0], 36);
             const edgeCode = parseInt(fields[1], 36);
@@ -286,6 +374,31 @@
                 fields.length > 2 ? float32FromBits(parseInt(fields[2], 36)) : null,
             ];
         });
+        inputAudioEdgesByXuid[xuid] = edges;
+    });
+
+    encodedInputStateResets.forEach(function (encoded) {
+        if (!Array.isArray(encoded) || typeof encoded[1] !== "string") {
+            return;
+        }
+        let previousTick = 0;
+        String(encoded[1]).split(",").filter(Boolean).forEach(function (token) {
+            previousTick += parseInt(token, 36) || 0;
+            appendInputResetTick(encoded[0], previousTick);
+        });
+        if (typeof encoded[2] === "string") {
+            previousTick = 0;
+            String(encoded[2]).split(",").filter(Boolean).forEach(function (token) {
+                previousTick += parseInt(token, 36) || 0;
+                const xuid = String(encoded[0] || "");
+                if (xuid) {
+                    if (!inputDeathResetTicksByXuid[xuid]) {
+                        inputDeathResetTicksByXuid[xuid] = [];
+                    }
+                    inputDeathResetTicksByXuid[xuid].push(previousTick);
+                }
+            });
+        }
     });
 
     function zigzagDecode(value) {
@@ -489,6 +602,49 @@
     }
 
     const radarTrack = decodeRadarTrack(encodedRadar);
+
+    // Exact player_death events are included in the payload. If they could not
+    // be parsed, a live-to-dead radar transition still releases held keys.
+    if (radarTrack && Array.isArray(radarTrack.players)) {
+        radarTrack.players.forEach(function (player) {
+            if (inputDeathResetTicksByXuid[player.xuid]
+                && inputDeathResetTicksByXuid[player.xuid].length) {
+                return;
+            }
+            let wasAlive = player.samples.length ? player.samples[0].alive : false;
+            for (let index = 1; index < player.samples.length; index += 1) {
+                const sample = player.samples[index];
+                if (wasAlive && !sample.alive) {
+                    appendInputResetTick(
+                        player.xuid,
+                        player.startTick + index * radarTrack.stride
+                    );
+                }
+                wasAlive = sample.alive;
+            }
+        });
+    }
+    const inputStateXuids = {};
+    Object.keys(inputAudioEdgesByXuid).forEach(function (xuid) {
+        inputStateXuids[xuid] = true;
+    });
+    Object.keys(inputResetTicksByXuid).forEach(function (xuid) {
+        inputStateXuids[xuid] = true;
+    });
+    Object.keys(inputStateXuids).forEach(function (xuid) {
+        const resetTicks = inputResetTicksByXuid[xuid] || [];
+        resetTicks.sort(function (left, right) { return left - right; });
+        const uniqueResetTicks = [];
+        resetTicks.forEach(function (tick) {
+            if (!uniqueResetTicks.length || uniqueResetTicks[uniqueResetTicks.length - 1] !== tick) {
+                uniqueResetTicks.push(tick);
+            }
+        });
+        inputEdgeStatesByXuid[xuid] = buildInputEdgeStateTrack(
+            inputAudioEdgesByXuid[xuid] || [],
+            uniqueResetTicks
+        );
+    });
 
     function decodeKillFeedbackTrack(raw) {
         if (!raw || !raw.length || raw.length < 2) {
@@ -2913,6 +3069,35 @@
         return changes[found][1];
     }
 
+    function inputHudMaskAt(changes, edgeStates, tick) {
+        const fallbackMask = inputMaskAt(changes, tick);
+        if (!edgeStates || !edgeStates.length) {
+            return fallbackMask;
+        }
+        let low = 0;
+        let high = edgeStates.length - 1;
+        let found = -1;
+        while (low <= high) {
+            const middle = (low + high) >> 1;
+            if (edgeStates[middle][0] <= tick) {
+                found = middle;
+                low = middle + 1;
+            } else {
+                high = middle - 1;
+            }
+        }
+        if (found < 0) {
+            return fallbackMask;
+        }
+        const state = edgeStates[found];
+        const knownMask = state[1];
+        let mask = (fallbackMask & ~knownMask) | (state[2] & knownMask);
+        if (state[0] === tick) {
+            mask |= state[3];
+        }
+        return mask;
+    }
+
     function weaponSlotPulseAt(changes, tick) {
         let low = 0;
         let high = changes.length - 1;
@@ -3384,7 +3569,7 @@
         }
 
         const tick = Number(state.nTick || 0);
-        const mask = inputMaskAt(changes, tick);
+        const mask = inputHudMaskAt(changes, inputEdgeStatesByXuid[xuid], tick);
         // Keep this ahead of the rendered-tick short circuit. The advanced HUD
         // profile can change while a demo is paused on the same tick.
         updateMirroredScoreboard(mask);
@@ -4527,7 +4712,11 @@
         const changes = inputTracksByXuid[String(povXuid)];
         if (changes && changes.length) {
             // Bit 8 = M1 / fire (same sticky window as the input HUD).
-            firing = Boolean(inputMaskAt(changes, tick) & (1 << 8));
+            firing = Boolean(inputHudMaskAt(
+                changes,
+                inputEdgeStatesByXuid[String(povXuid)],
+                tick,
+            ) & (1 << 8));
         }
         if (!firing) {
             const sounds = findActivePovSounds(tick, povXuid, true);
