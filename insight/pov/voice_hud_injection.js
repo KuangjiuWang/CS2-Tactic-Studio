@@ -274,8 +274,6 @@
     const inputEdgeStatesByXuid = {};
     const inputResetTicksByXuid = {};
     const inputDeathResetTicksByXuid = {};
-    const INPUT_HUD_BUTTON_MASK = (1 << 13) - 1;
-
     function appendInputResetTick(xuid, tick) {
         const key = String(xuid || "");
         const value = Number(tick);
@@ -334,7 +332,6 @@
                 pressedThisTickMask = 0;
             }
             if (event.reset) {
-                knownMask |= INPUT_HUD_BUTTON_MASK;
                 heldMask = 0;
                 pressedThisTickMask = 0;
                 return;
@@ -640,6 +637,7 @@
                 uniqueResetTicks.push(tick);
             }
         });
+        inputResetTicksByXuid[xuid] = uniqueResetTicks;
         inputEdgeStatesByXuid[xuid] = buildInputEdgeStateTrack(
             inputAudioEdgesByXuid[xuid] || [],
             uniqueResetTicks
@@ -934,6 +932,7 @@
     let inputKeyPanels = [];
     let inputMousePad = null;
     let inputMouseHeadDot = null;
+    let inputHudStatusLabel = null;
     let inputMouseTrailSegments = [];
     let inputMousePathXuid = "";
     let inputMousePathLastTick = -1;
@@ -2875,7 +2874,7 @@
 
     function updateMouseMotionPad(samples, xuid, tick) {
         if (!inputMousePad || !inputMousePad.IsValid()) {
-            return;
+            return false;
         }
         // Keep the labeled motion pad visible even when this demo/player has no
         // mouse-delta samples; only the data-backed trail and pointer disappear.
@@ -2908,12 +2907,13 @@
         }
         if (!points.length) {
             inputMouseHeadDot.visible = false;
-            return;
+            return false;
         }
         const head = points[points.length - 1];
         inputMouseHeadDot.visible = true;
         inputMouseHeadDot.style.position = mouseCssPx(head.x - 5) + " "
             + mouseCssPx(head.y - 5) + " 0px";
+        return true;
     }
 
     function inputHudViewportHeight() {
@@ -3033,6 +3033,18 @@
             ["M2", 292, 38, 39, 44, 11, 13, 9, false, 0],
         ];
         createMouseMotionPad(inputHud);
+        inputHudStatusLabel = $.CreatePanel("Label", inputHud, "CS2InsightInputHudStatus");
+        inputHudStatusLabel.text = "IDLE";
+        inputHudStatusLabel.hittest = false;
+        inputHudStatusLabel.style.position = "253px 157px 0px";
+        inputHudStatusLabel.style.width = "78px";
+        inputHudStatusLabel.style.height = "16px";
+        inputHudStatusLabel.style.fontSize = "10px";
+        inputHudStatusLabel.style.fontWeight = "bold";
+        inputHudStatusLabel.style.fontFamily = "Consolas";
+        inputHudStatusLabel.style.textAlign = "center";
+        inputHudStatusLabel.style.color = "#93A4B8";
+        inputHudStatusLabel.style.textShadow = "none";
         inputKeyPanels = specs.map(function (spec, index) {
             const panel = createInputKey(inputHud, spec, index);
             const onlyWhenActive = Boolean(spec[8]);
@@ -3070,8 +3082,37 @@
         return changes[found][1];
     }
 
-    function inputHudMaskAt(changes, edgeStates, tick) {
-        const fallbackMask = inputMaskAt(changes, tick);
+    function inputHudMaskAt(changes, edgeStates, tick, resetTicks) {
+        let fallbackLow = 0;
+        let fallbackHigh = changes.length - 1;
+        let fallbackIndex = -1;
+        while (fallbackLow <= fallbackHigh) {
+            const middle = (fallbackLow + fallbackHigh) >> 1;
+            if (changes[middle][0] <= tick) {
+                fallbackIndex = middle;
+                fallbackLow = middle + 1;
+            } else {
+                fallbackHigh = middle - 1;
+            }
+        }
+        let fallbackMask = fallbackIndex >= 0 ? Number(changes[fallbackIndex][1]) || 0 : 0;
+        const fallbackTick = fallbackIndex >= 0 ? Number(changes[fallbackIndex][0]) : -1;
+        const sortedResets = Array.isArray(resetTicks) ? resetTicks : [];
+        let resetLow = 0;
+        let resetHigh = sortedResets.length - 1;
+        let resetIndex = -1;
+        while (resetLow <= resetHigh) {
+            const middle = (resetLow + resetHigh) >> 1;
+            if (sortedResets[middle] <= tick) {
+                resetIndex = middle;
+                resetLow = middle + 1;
+            } else {
+                resetHigh = middle - 1;
+            }
+        }
+        if (resetIndex >= 0 && sortedResets[resetIndex] > fallbackTick) {
+            fallbackMask = 0;
+        }
         if (!edgeStates || !edgeStates.length) {
             return fallbackMask;
         }
@@ -3570,7 +3611,12 @@
         }
 
         const tick = Number(state.nTick || 0);
-        const mask = inputHudMaskAt(changes, inputEdgeStatesByXuid[xuid], tick);
+        const mask = inputHudMaskAt(
+            changes,
+            inputEdgeStatesByXuid[xuid],
+            tick,
+            inputResetTicksByXuid[xuid],
+        );
         // Keep this ahead of the rendered-tick short circuit. The advanced HUD
         // profile can change while a demo is paused on the same tick.
         updateMirroredScoreboard(mask);
@@ -3595,6 +3641,7 @@
         const weaponSlot = weaponSlotPulseAt(weaponSelectTracksByXuid[xuid] || [], tick);
         const handSwitchActive = Boolean(inputMaskAt(handSwitchTracksByXuid[xuid] || [], tick));
         const mouseSamples = mouseTracksByXuid[xuid] || [];
+        let anyInputActive = Boolean(mask) || weaponSlot > 0 || handSwitchActive;
         inputKeyPanels.forEach(function (key) {
             if (!key.panel || !key.panel.IsValid()) {
                 return;
@@ -3604,12 +3651,16 @@
                 : (key.weaponSlot > 0
                     ? weaponSlot === key.weaponSlot
                     : Boolean(mask & (1 << key.bit)));
+            anyInputActive = anyInputActive || active;
             key.panel.visible = inputHudDisplayMode === "always"
                 || (inputHudDisplayMode === "hybrid" && !key.onlyWhenActive)
                 || active;
             styleKey(key.panel, active);
         });
-        updateMouseMotionPad(mouseSamples, xuid, tick);
+        const mouseMotionActive = updateMouseMotionPad(mouseSamples, xuid, tick);
+        if (inputHudStatusLabel && inputHudStatusLabel.IsValid()) {
+            inputHudStatusLabel.visible = !anyInputActive && !mouseMotionActive;
+        }
     }
 
     function playerColorHex(xuid, colorSlot) {
@@ -4717,6 +4768,7 @@
                 changes,
                 inputEdgeStatesByXuid[String(povXuid)],
                 tick,
+                inputResetTicksByXuid[String(povXuid)],
             ) & (1 << 8));
         }
         if (!firing) {
