@@ -332,6 +332,11 @@
                 pressedThisTickMask = 0;
             }
             if (event.reset) {
+                // A lifecycle boundary starts a new input segment. Do not keep
+                // bits marked edge-authoritative from the previous life/round;
+                // the aggregate track must be able to repopulate a key until
+                // its next exact edge arrives in this segment.
+                knownMask = 0;
                 heldMask = 0;
                 pressedThisTickMask = 0;
                 return;
